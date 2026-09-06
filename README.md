@@ -81,17 +81,77 @@ built on paraphrased text learns the paraphraser's voice, not the author's
 synthesizing style rules, while still keeping lower-trust samples around
 for topical search.
 
-## Status
-
-Core (`schema` + `metrics` + `engine` trait) and the `sqlite-backend`
-reference implementation are both implemented and tested:
-`cargo test --all-features` passes (7/7, including a live ingest→embed→
-store→search round trip), `cargo clippy --all-features --all-targets` is
-clean on both the default build and the feature-enabled build.
+## The `larc` CLI
 
 ```bash
-cargo build                          # core only, no embedding/storage deps
+cargo install --path . --features cli,sqlite-backend
+```
+
+| Command | What it does | Needs |
+|---|---|---|
+| `larc profile <file>` | Print the `LinguisticProfile` of a file (`-` for stdin). `--json` for the raw struct. | `cli` |
+| `larc ingest file <path> --author X` | Store one file as a single sample. `--confidence`, `--source-kind`, `--register`, `--tags`, `--project`. | `cli,sqlite-backend` |
+| `larc ingest claude-sessions <dir> --author X` | Store every human-authored turn from a directory of session transcripts. `--min-words`, `--dry-run`. | `cli,sqlite-backend` |
+| `larc search <query> [--author X] [--top-k N]` | Embedding similarity search over stored samples. | `cli,sqlite-backend` |
+| `larc patterns list <author>` / `larc patterns add …` | Read and write distilled `VoicePattern`s. | `cli,sqlite-backend` |
+
+The `cli` feature alone builds only `larc profile`, which needs nothing but the
+core crate. Commands that touch a lexicon are compiled in by `sqlite-backend`,
+rather than appearing in `--help` and failing at runtime.
+
+The database lives at `--db`, else `$LARC_LEXICON_DB`, else
+`~/.larc-lexicon/voice.db`.
+
+Sample ids are UUID v5 over origin + exact text, so re-running an ingest as a
+corpus grows **upserts instead of duplicating**, and an edited turn becomes a
+new sample rather than a silent overwrite.
+
+### Why transcript ingest is stricter than it looks
+
+A Claude Code transcript stores several different things under the same
+`"type": "user"` tag. Across 14,425 such entries in one real nine-session
+project:
+
+| `origin.kind` | `content` | count | what it is |
+|---|---|---:|---|
+| absent | array | 11,537 | `tool_result` blocks re-injected as user turns |
+| absent | string | 2,226 | harness/hook-injected synthetic turns |
+| `task-notification` | string | 342 | background-task completion notices |
+| `human` | string | 304 | **the author's typed turns** |
+| `human` | array | 10 | **the author's text, plus an attachment** |
+| `peer` | string | 6 | messages relayed *from another agent session* |
+
+The obvious filter — `type == "user"` with a string body — captures 2,878
+entries, of which **2,574 (89%) are not the author's writing at all**. It would
+attribute harness boilerplate and other agents' prose to the human: exactly the
+contamination `Confidence` exists to prevent, arriving through the ingest path
+instead. So authorship here is decided by `origin.kind == "human"` alone.
+
+Body *shape* is then a recall question rather than an authorship one. Once an
+entry is known to be human-authored, an array body is not a tool result — those
+never carry a `human` origin — but a message with an attachment, and its `text`
+blocks are ordinary prose, often the most opinionated kind since they react to a
+screenshot. Those are kept; only the ones whose entire text is an `[Image #N]`
+marker drop out, having no words to measure.
+
+Even a correctly identified turn is not clean text: the harness appends
+`<system-reminder>` blocks and slash-command echoes to what the human typed.
+Those are stripped before profiling, or every metric is computed partly over
+boilerplate nobody wrote.
+
+## Status
+
+Core, the `sqlite-backend` reference implementation, and the `larc` CLI are
+implemented and tested. `cargo test --all-features` passes 18/18 — including a
+live ingest→embed→store→search round trip, idempotent re-ingest, and the
+pattern write/read round trip — and `cargo clippy --all-targets -- -D warnings`
+is clean on the default, `cli`, and `--all-features` builds.
+
+```bash
+cargo build                                   # core only, no embedding/storage deps
 cargo build --features sqlite-backend
+cargo build --features cli                    # `larc profile` only
+cargo build --features cli,sqlite-backend     # the full CLI
 ```
 
 ## License

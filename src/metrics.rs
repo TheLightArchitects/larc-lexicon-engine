@@ -82,6 +82,19 @@ fn tokenize_words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Canonical word count — the *same* tokenization [`compute_linguistic_profile`]
+/// uses, so a `VoiceSample::word_count` and the `*_per_100_words` rates in its
+/// `LinguisticProfile` are always denominated identically.
+///
+/// Deliberately not `split_whitespace().count()`. That convention counts
+/// `wait—no` as one word where this tokenizer counts two — desynchronizing
+/// `word_count` from precisely the dash-joined constructions that
+/// `dash_rate_per_100_words` exists to measure. Any code building a
+/// `VoiceSample` should call this rather than rolling its own count.
+pub fn word_count(text: &str) -> u32 {
+    tokenize_words(text).len() as u32
+}
+
 /// Approximate sentence splitter on `.`/`!`/`?`. Does not special-case
 /// abbreviations (e.g. "Dr.", "e.g.") — acceptable for corpus-level
 /// aggregate statistics, not intended for exact sentence boundary detection.

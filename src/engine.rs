@@ -30,4 +30,13 @@ pub trait LexiconEngine {
         top_k: usize,
     ) -> Result<Vec<VoiceSample>>;
     async fn patterns_for(&self, author: &str) -> Result<Vec<VoicePattern>>;
+    /// Persist distilled patterns, replacing any existing pattern with the
+    /// same id. Returns how many were written.
+    ///
+    /// Kept separate from [`LexiconEngine::ingest`] because the two layers are
+    /// written under different circumstances: samples are bulk-loaded raw
+    /// evidence, whereas a `VoicePattern` is a reviewed, human-legible claim
+    /// *about* that evidence. Without this method `patterns_for` could only
+    /// ever return empty, since nothing else in the trait can populate it.
+    async fn save_patterns(&self, patterns: &[VoicePattern]) -> Result<usize>;
 }

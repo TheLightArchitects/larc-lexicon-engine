@@ -193,6 +193,35 @@ impl LexiconEngine for SqliteEngine {
         }
         Ok(out)
     }
+
+    async fn save_patterns(&self, patterns: &[VoicePattern]) -> Result<usize> {
+        if patterns.is_empty() {
+            return Ok(0);
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| LexiconError::Storage("connection lock poisoned".into()))?;
+        for pattern in patterns {
+            conn.execute(
+                "INSERT OR REPLACE INTO patterns
+                 (id, author, category_json, description, example_ids_json, replicate)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    pattern.id.to_string(),
+                    pattern.author,
+                    serde_json::to_string(&pattern.category)
+                        .map_err(|e| LexiconError::Storage(e.to_string()))?,
+                    pattern.description,
+                    serde_json::to_string(&pattern.example_ids)
+                        .map_err(|e| LexiconError::Storage(e.to_string()))?,
+                    pattern.replicate,
+                ],
+            )
+            .map_err(|e| LexiconError::Storage(e.to_string()))?;
+        }
+        Ok(patterns.len())
+    }
 }
 
 fn row_to_sample_with_embedding(row: &rusqlite::Row) -> rusqlite::Result<(VoiceSample, Vec<f32>)> {
