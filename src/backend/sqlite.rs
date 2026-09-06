@@ -130,7 +130,12 @@ impl LexiconEngine for SqliteEngine {
         Ok(samples.len())
     }
 
-    async fn search(&self, query: &str, author: Option<&str>, top_k: usize) -> Result<Vec<VoiceSample>> {
+    async fn search(
+        &self,
+        query: &str,
+        author: Option<&str>,
+        top_k: usize,
+    ) -> Result<Vec<VoiceSample>> {
         let query_embedding = self.embed_one(query)?;
 
         let conn = self
@@ -151,7 +156,9 @@ impl LexiconEngine for SqliteEngine {
                 rows.push(row.map_err(|e| LexiconError::Storage(e.to_string()))?);
             }
         } else {
-            let mut stmt = conn.prepare(SELECT).map_err(|e| LexiconError::Storage(e.to_string()))?;
+            let mut stmt = conn
+                .prepare(SELECT)
+                .map_err(|e| LexiconError::Storage(e.to_string()))?;
             let mapped = stmt
                 .query_map([], row_to_sample_with_embedding)
                 .map_err(|e| LexiconError::Storage(e.to_string()))?;
@@ -163,7 +170,10 @@ impl LexiconEngine for SqliteEngine {
         let corpus: Vec<&[f32]> = rows.iter().map(|(_, e)| e.as_slice()).collect();
         let ranked = fastembed::similarity::top_k(&query_embedding, &corpus, top_k);
 
-        Ok(ranked.into_iter().map(|(idx, _score)| rows[idx].0.clone()).collect())
+        Ok(ranked
+            .into_iter()
+            .map(|(idx, _score)| rows[idx].0.clone())
+            .collect())
     }
 
     async fn patterns_for(&self, author: &str) -> Result<Vec<VoicePattern>> {
@@ -200,8 +210,8 @@ fn row_to_sample_with_embedding(row: &rusqlite::Row) -> rusqlite::Result<(VoiceS
     let profile_json: String = row.get(9)?;
     let embedding_blob: Vec<u8> = row.get(10)?;
 
-    let id =
-        Uuid::parse_str(&id_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(e)))?;
+    let id = Uuid::parse_str(&id_str)
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(e)))?;
     let source: SourceRef = serde_json::from_str(&source_json)
         .map_err(|e| rusqlite::Error::FromSqlConversionFailure(3, Type::Text, Box::new(e)))?;
     let captured_at = DateTime::parse_from_rfc3339(&captured_at_str)
@@ -245,8 +255,8 @@ fn row_to_pattern(row: &rusqlite::Row) -> rusqlite::Result<VoicePattern> {
     let example_ids_json: String = row.get(4)?;
     let replicate: bool = row.get(5)?;
 
-    let id =
-        Uuid::parse_str(&id_str).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(e)))?;
+    let id = Uuid::parse_str(&id_str)
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(e)))?;
     let category: PatternCategory = serde_json::from_str(&category_json)
         .map_err(|e| rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(e)))?;
     let example_ids: Vec<Uuid> = serde_json::from_str(&example_ids_json)

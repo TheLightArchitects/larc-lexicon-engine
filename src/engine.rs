@@ -23,6 +23,11 @@ pub type Result<T> = std::result::Result<T, LexiconError>;
 #[async_trait]
 pub trait LexiconEngine {
     async fn ingest(&self, samples: &[VoiceSample]) -> Result<usize>;
-    async fn search(&self, query: &str, author: Option<&str>, top_k: usize) -> Result<Vec<VoiceSample>>;
+    async fn search(
+        &self,
+        query: &str,
+        author: Option<&str>,
+        top_k: usize,
+    ) -> Result<Vec<VoiceSample>>;
     async fn patterns_for(&self, author: &str) -> Result<Vec<VoicePattern>>;
 }

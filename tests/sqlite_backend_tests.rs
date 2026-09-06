@@ -2,7 +2,9 @@
 
 use chrono::Utc;
 use larc_lexicon_engine::backend::SqliteEngine;
-use larc_lexicon_engine::{compute_linguistic_profile, Confidence, LexiconEngine, SourceKind, SourceRef, VoiceSample};
+use larc_lexicon_engine::{
+    compute_linguistic_profile, Confidence, LexiconEngine, SourceKind, SourceRef, VoiceSample,
+};
 use uuid::Uuid;
 
 fn sample(author: &str, text: &str) -> VoiceSample {
@@ -34,7 +36,10 @@ async fn ingest_and_search_round_trip() {
 
     let samples = vec![
         sample("kevin", "Check the deploy logs before pushing to main."),
-        sample("kevin", "I think the readability formula might be off by a bit."),
+        sample(
+            "kevin",
+            "I think the readability formula might be off by a bit.",
+        ),
         sample("kevin", "The quarterly numbers show a clear upward trend."),
     ];
 
