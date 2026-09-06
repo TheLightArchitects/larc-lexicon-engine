@@ -16,23 +16,29 @@ Three pieces, deliberately separated:
   no POS tagger, no trained model, no network call. Deterministic and
   reproducible from the text itself.
 - **`engine`** — the `LexiconEngine` trait: `ingest` / `search` /
-  `patterns_for`. No concrete backend ships in this crate (see below).
+  `patterns_for`.
+- **`backend::SqliteEngine`** (opt-in, `sqlite-backend` feature) — a
+  reference implementation: SQLite for storage, `fastembed` (pure Rust,
+  ONNX, offline after the first model download) for embeddings, brute-force
+  cosine similarity via `fastembed::similarity::top_k` for search.
 
-## Why no backend ships here
+## Why the backend is a feature, not the default
 
-The obvious backend is a local embedding model + a small vector store — but
-this repo is meant to be genuinely public, and:
+The core (`schema` + `metrics` + `engine` trait) has zero dependencies
+beyond `serde`/`uuid`/`chrono`/`thiserror`/`async-trait` by design — this
+repo is meant to be genuinely public and auditable, and:
 
-1. A path-dependency on any specific private vector-store crate breaks the
-   build for anyone else who clones this.
-2. Bundling a full embedding stack (model weights or an ONNX runtime) bloats
-   what should be a small, auditable core.
+1. Nothing in the core depends on any specific storage/embedding stack, so
+   swapping backends never touches the dependency tree consumers of the
+   trait actually rely on.
+2. Bundling a full embedding stack (ONNX runtime, tokenizers, image codecs
+   fastembed pulls in transitively) by default would bloat what should be a
+   small core for anyone who only wants the schema and metrics.
 
-So the core crate ships the trait, not an implementation. Implementing
-`LexiconEngine` against your own storage — SQLite + local embeddings,
-Postgres + pgvector, a hosted vector DB, whatever you already run — is a
-small amount of glue code outside this crate, and it never has to touch
-this repository's dependency tree.
+`cargo build --features sqlite-backend` opts in to the real thing. Anyone
+who'd rather implement `LexiconEngine` against their own storage — Postgres
++ pgvector, a hosted vector DB, whatever they already run — can do that
+too, entirely outside this crate's dependency tree.
 
 ## The `LinguisticProfile` feature set — and why these fields specifically
 
@@ -77,9 +83,16 @@ for topical search.
 
 ## Status
 
-Core (`schema` + `metrics` + `engine` trait) is implemented and tested —
-`cargo test` passes, `cargo clippy` is clean. No backend implementation
-exists yet; that's real, separate work, not stubbed out here.
+Core (`schema` + `metrics` + `engine` trait) and the `sqlite-backend`
+reference implementation are both implemented and tested:
+`cargo test --all-features` passes (7/7, including a live ingest→embed→
+store→search round trip), `cargo clippy --all-features --all-targets` is
+clean on both the default build and the feature-enabled build.
+
+```bash
+cargo build                          # core only, no embedding/storage deps
+cargo build --features sqlite-backend
+```
 
 ## License
 

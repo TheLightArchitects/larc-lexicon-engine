@@ -10,6 +10,7 @@
 //! README for why, and how to implement `LexiconEngine` against your own
 //! storage.
 
+pub mod backend;
 pub mod engine;
 pub mod metrics;
 pub mod schema;
