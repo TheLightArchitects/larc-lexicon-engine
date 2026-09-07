@@ -49,10 +49,39 @@ fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        0.0
+    } else {
+        dot / (norm_a * norm_b)
+    }
+}
+
+/// Brute-force cosine-similarity ranking: every `corpus` entry's index
+/// paired with its similarity to `query`, sorted descending, truncated to
+/// `k`. Implemented in-crate rather than via `fastembed::similarity::top_k`
+/// -- that helper's presence and signature have not been stable across
+/// fastembed releases (a consumer pinned to an older fastembed than this
+/// crate's own lockfile resolved failed to build against it), and cosine
+/// top-k is a handful of lines with no reason to route through an external
+/// API surface this crate doesn't otherwise depend on.
+fn top_k_by_cosine_similarity(query: &[f32], corpus: &[&[f32]], k: usize) -> Vec<(usize, f32)> {
+    let mut scored: Vec<(usize, f32)> = corpus
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (i, cosine_similarity(query, v)))
+        .collect();
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    scored.truncate(k);
+    scored
+}
+
 /// A SQLite-backed `LexiconEngine` using local `fastembed` embeddings and
-/// brute-force cosine similarity search (`fastembed::similarity::top_k`) --
-/// entirely local, no external service, no network after the first model
-/// download.
+/// brute-force cosine similarity search -- entirely local, no external
+/// service, no network after the first model download.
 pub struct SqliteEngine {
     conn: Mutex<Connection>,
     /// `None` until the first call that actually needs to embed something.
@@ -205,7 +234,7 @@ impl LexiconEngine for SqliteEngine {
         let rows = self.select_samples_with_embedding(author)?;
 
         let corpus: Vec<&[f32]> = rows.iter().map(|(_, e)| e.as_slice()).collect();
-        let ranked = fastembed::similarity::top_k(&query_embedding, &corpus, top_k);
+        let ranked = top_k_by_cosine_similarity(&query_embedding, &corpus, top_k);
 
         Ok(ranked
             .into_iter()
@@ -411,5 +440,48 @@ mod tests {
         );
 
         std::fs::remove_file(&db_path).ok();
+    }
+
+    #[test]
+    fn top_k_ranks_descending_by_cosine_similarity() {
+        let query = [1.0_f32, 0.0];
+        // Index 0: orthogonal (sim 0). Index 1: identical direction (sim 1).
+        // Index 2: opposite direction (sim -1).
+        let a = [0.0_f32, 1.0];
+        let b = [2.0_f32, 0.0];
+        let c = [-1.0_f32, 0.0];
+        let corpus: Vec<&[f32]> = vec![&a, &b, &c];
+
+        let ranked = top_k_by_cosine_similarity(&query, &corpus, 3);
+        let order: Vec<usize> = ranked.iter().map(|(i, _)| *i).collect();
+        assert_eq!(order, vec![1, 0, 2], "must rank most-similar first");
+        assert!((ranked[0].1 - 1.0).abs() < 1e-6);
+        assert!((ranked[2].1 - -1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn top_k_truncates_to_k() {
+        let query = [1.0_f32, 0.0];
+        let a = [1.0_f32, 0.0];
+        let b = [0.9_f32, 0.1];
+        let c = [0.0_f32, 1.0];
+        let corpus: Vec<&[f32]> = vec![&a, &b, &c];
+
+        let ranked = top_k_by_cosine_similarity(&query, &corpus, 2);
+        assert_eq!(
+            ranked.len(),
+            2,
+            "must truncate to k even with more candidates"
+        );
+    }
+
+    #[test]
+    fn top_k_treats_a_zero_vector_as_zero_similarity_not_nan() {
+        let query = [1.0_f32, 0.0];
+        let zero = [0.0_f32, 0.0];
+        let corpus: Vec<&[f32]> = vec![&zero];
+
+        let ranked = top_k_by_cosine_similarity(&query, &corpus, 1);
+        assert_eq!(ranked[0].1, 0.0, "a zero-norm vector must score 0, not NaN");
     }
 }
