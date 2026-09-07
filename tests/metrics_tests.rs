@@ -61,4 +61,9 @@ fn empty_text_does_not_panic_and_yields_zeroed_rates() {
     let profile = compute_linguistic_profile("");
     assert_eq!(profile.type_token_ratio, 0.0);
     assert_eq!(profile.comma_rate_per_100_words, 0.0);
+    // Both formulas have a non-zero y-intercept (206.835 and -15.59), so
+    // without an explicit `total_words > 0` guard these would report
+    // specific fabricated scores instead of "no signal" on empty input.
+    assert_eq!(profile.flesch_reading_ease, 0.0);
+    assert_eq!(profile.flesch_kincaid_grade, 0.0);
 }

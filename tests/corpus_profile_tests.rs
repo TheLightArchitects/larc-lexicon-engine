@@ -76,6 +76,11 @@ fn fully_empty_corpus_does_not_panic_or_nan() {
     assert_eq!(profile.document_count, 0);
     assert_eq!(profile.total_words, 0);
     assert_eq!(profile.type_token_ratio, 0.0);
+    // Both formulas have a non-zero y-intercept, so without an explicit
+    // `total_words > 0` guard a zero-document corpus would report specific
+    // fabricated readability scores instead of "no signal."
+    assert_eq!(profile.flesch_reading_ease, 0.0);
+    assert_eq!(profile.flesch_kincaid_grade, 0.0);
     assert!(!profile.imperative_rate.is_nan());
     assert!(!profile.avg_sentence_length.is_nan());
 }

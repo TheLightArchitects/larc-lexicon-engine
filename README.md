@@ -102,7 +102,9 @@ rather than appearing in `--help` and failing at runtime.
 The database lives at `--db`, else `$LARC_LEXICON_DB`, else
 `~/.larc-lexicon/voice.db`.
 
-Sample ids are UUID v5 over origin + exact text, so re-running an ingest as a
+Sample ids are UUID v5 over origin + exact text (for session ingest, origin
+includes the turn's position in its session, so two identical turns — two
+separate "yes" confirmations — don't collide), so re-running an ingest as a
 corpus grows **upserts instead of duplicating**, and an edited turn becomes a
 new sample rather than a silent overwrite.
 
@@ -142,10 +144,12 @@ boilerplate nobody wrote.
 ## Status
 
 Core, the `sqlite-backend` reference implementation, and the `larc` CLI are
-implemented and tested. `cargo test --all-features` passes 18/18 — including a
-live ingest→embed→store→search round trip, idempotent re-ingest, and the
-pattern write/read round trip — and `cargo clippy --all-targets -- -D warnings`
-is clean on the default, `cli`, and `--all-features` builds.
+implemented and tested. `cargo test --all-features` passes 36/36 — including a
+live ingest→embed→store→search round trip, idempotent re-ingest, the
+pattern write/read round trip, and corpus-aggregation correctness (pooled
+rates, sentence-boundary handling, lexical-diversity scoping) — and
+`cargo clippy --all-targets -- -D warnings` is clean on the default, `cli`,
+and `--all-features` builds.
 
 ```bash
 cargo build                                   # core only, no embedding/storage deps

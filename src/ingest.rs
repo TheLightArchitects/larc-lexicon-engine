@@ -170,13 +170,24 @@ fn strip_attachment_markers(text: &str) -> String {
     out
 }
 
-/// Remove one `<tag ...>...</tag>` block, including its delimiters, everywhere
-/// it appears.
+/// If `after_name` (the text immediately following `<tag`) opens with a
+/// self-closing form — `/>` or `attr="x"/>` — return the byte offset just
+/// past its `>`. `None` means this is a normal open tag (or malformed).
+fn self_closing_end(after_name: &str) -> Option<usize> {
+    let gt = after_name.find('>')?;
+    after_name[..gt].ends_with('/').then_some(gt + 1)
+}
+
+/// Remove one `<tag ...>...</tag>` block, including its delimiters, or one
+/// self-closing `<tag ... />`, everywhere either appears.
 ///
-/// Matches an open tag only when the character after the tag name is `>` or
-/// whitespace, so stripping `command` never eats a `<commanding>` element. An
-/// unclosed open tag drops the remainder of the string: harness blocks are
-/// appended at the end, so a truncated one has no authored text after it.
+/// Matches an open tag only when the character after the tag name is `>`,
+/// whitespace, or `/`, so stripping `command` never eats a `<commanding>`
+/// element. A self-closing tag removes only itself — searching for a
+/// `</tag>` close it will never have would otherwise consume everything
+/// after it. A genuinely unclosed *paired* open tag still drops the
+/// remainder of the string: harness blocks are appended at the end, so a
+/// truncated one has no authored text after it.
 fn strip_tag_block(text: &str, tag: &str) -> String {
     let open_prefix = format!("<{tag}");
     let close = format!("</{tag}>");
@@ -190,9 +201,15 @@ fn strip_tag_block(text: &str, tag: &str) -> String {
         };
 
         let after_name = &rest[start + open_prefix.len()..];
-        let is_tag = after_name.starts_with('>')
-            || after_name.starts_with(|c: char| c.is_whitespace())
-            || after_name.starts_with('/');
+
+        if let Some(end) = self_closing_end(after_name) {
+            out.push_str(&rest[..start]);
+            rest = &after_name[end..];
+            continue;
+        }
+
+        let is_tag =
+            after_name.starts_with('>') || after_name.starts_with(|c: char| c.is_whitespace());
         if !is_tag {
             // A longer element name that merely shares this prefix — keep it.
             let consumed = start + open_prefix.len();
@@ -562,6 +579,15 @@ mod tests {
     fn unclosed_harness_block_drops_only_the_trailing_remainder() {
         let raw = "Authored text.<system-reminder>truncated injection";
         assert_eq!(strip_harness_blocks(raw), "Authored text.");
+    }
+
+    #[test]
+    fn self_closing_harness_tag_removes_only_itself() {
+        let raw = "Real words. <command-args/> more real words that should be kept";
+        assert_eq!(
+            strip_harness_blocks(raw),
+            "Real words.  more real words that should be kept"
+        );
     }
 
     #[test]

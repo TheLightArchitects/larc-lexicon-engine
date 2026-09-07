@@ -348,8 +348,20 @@ pub fn compute_linguistic_profile(text: &str) -> LinguisticProfile {
     };
 
     // Flesch (1948); Kincaid et al. (1975); Gunning (1952) — standard closed-form formulas.
-    let flesch_reading_ease = 206.835 - 1.015 * words_per_sentence - 84.6 * syllables_per_word;
-    let flesch_kincaid_grade = 0.39 * words_per_sentence + 11.8 * syllables_per_word - 15.59;
+    // Gated by `total_words > 0` like every other field here (see
+    // `gunning_fog_index` just below): both formulas have a non-zero
+    // y-intercept, so on empty input they'd otherwise report specific
+    // fabricated scores instead of "no signal."
+    let flesch_reading_ease = if total_words > 0 {
+        206.835 - 1.015 * words_per_sentence - 84.6 * syllables_per_word
+    } else {
+        0.0
+    };
+    let flesch_kincaid_grade = if total_words > 0 {
+        0.39 * words_per_sentence + 11.8 * syllables_per_word - 15.59
+    } else {
+        0.0
+    };
     let gunning_fog_index = if total_words > 0 {
         0.4 * (words_per_sentence + 100.0 * (stats.complex_word_count as f32 / total_words as f32))
     } else {
@@ -489,8 +501,20 @@ pub fn aggregate_corpus_profile<'a>(texts: impl IntoIterator<Item = &'a str>) ->
         0.0
     };
 
-    let flesch_reading_ease = 206.835 - 1.015 * words_per_sentence - 84.6 * syllables_per_word;
-    let flesch_kincaid_grade = 0.39 * words_per_sentence + 11.8 * syllables_per_word - 15.59;
+    // Gated by `total_words > 0` for the same reason as in
+    // `compute_linguistic_profile`: both formulas have a non-zero
+    // y-intercept, so an empty corpus would otherwise report fabricated
+    // scores instead of "no signal."
+    let flesch_reading_ease = if total_words > 0 {
+        206.835 - 1.015 * words_per_sentence - 84.6 * syllables_per_word
+    } else {
+        0.0
+    };
+    let flesch_kincaid_grade = if total_words > 0 {
+        0.39 * words_per_sentence + 11.8 * syllables_per_word - 15.59
+    } else {
+        0.0
+    };
     let gunning_fog_index = if total_words > 0 {
         0.4 * (words_per_sentence + 100.0 * (complex_words as f32 / total_words as f32))
     } else {

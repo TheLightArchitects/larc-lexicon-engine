@@ -9,6 +9,8 @@
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
+#[cfg(feature = "sqlite-backend")]
+use larc_lexicon_engine::CorpusProfile;
 use larc_lexicon_engine::{compute_linguistic_profile, LinguisticProfile};
 
 #[derive(Parser)]
@@ -75,9 +77,104 @@ fn deferred(value: Option<f32>, needs: &str) -> String {
     }
 }
 
-fn render_profile(p: &LinguisticProfile, words: u32) -> String {
+/// The measurement fields `LinguisticProfile` and `CorpusProfile` share —
+/// everything except `CorpusProfile`'s corpus-only `document_count` /
+/// `total_words`. `larc profile` and `larc stats` both render through this
+/// one struct so a future field addition can't update one display and miss
+/// the other, the way the two format strings here had already drifted.
+struct DisplayProfile {
+    type_token_ratio: f32,
+    avg_word_length: f32,
+    hapax_legomena_ratio: f32,
+    avg_sentence_length: f32,
+    sentence_length_stddev: f32,
+    comma_rate_per_100_words: f32,
+    semicolon_rate_per_100_words: f32,
+    dash_rate_per_100_words: f32,
+    question_rate_per_100_words: f32,
+    exclamation_rate_per_100_words: f32,
+    flesch_reading_ease: f32,
+    flesch_kincaid_grade: f32,
+    gunning_fog_index: f32,
+    first_person_singular_rate_per_100_words: f32,
+    first_person_plural_rate_per_100_words: f32,
+    second_person_rate_per_100_words: f32,
+    imperative_rate: f32,
+    certainty_rate_per_100_words: f32,
+    hedge_rate_per_100_words: f32,
+    causal_connective_rate_per_100_words: f32,
+    contrast_connective_rate_per_100_words: f32,
+    formality_score: Option<f32>,
+    sentiment_polarity: Option<f32>,
+    sentiment_subjectivity: Option<f32>,
+}
+
+impl From<&LinguisticProfile> for DisplayProfile {
+    fn from(p: &LinguisticProfile) -> Self {
+        Self {
+            type_token_ratio: p.type_token_ratio,
+            avg_word_length: p.avg_word_length,
+            hapax_legomena_ratio: p.hapax_legomena_ratio,
+            avg_sentence_length: p.avg_sentence_length,
+            sentence_length_stddev: p.sentence_length_stddev,
+            comma_rate_per_100_words: p.comma_rate_per_100_words,
+            semicolon_rate_per_100_words: p.semicolon_rate_per_100_words,
+            dash_rate_per_100_words: p.dash_rate_per_100_words,
+            question_rate_per_100_words: p.question_rate_per_100_words,
+            exclamation_rate_per_100_words: p.exclamation_rate_per_100_words,
+            flesch_reading_ease: p.flesch_reading_ease,
+            flesch_kincaid_grade: p.flesch_kincaid_grade,
+            gunning_fog_index: p.gunning_fog_index,
+            first_person_singular_rate_per_100_words: p.first_person_singular_rate_per_100_words,
+            first_person_plural_rate_per_100_words: p.first_person_plural_rate_per_100_words,
+            second_person_rate_per_100_words: p.second_person_rate_per_100_words,
+            imperative_rate: p.imperative_rate,
+            certainty_rate_per_100_words: p.certainty_rate_per_100_words,
+            hedge_rate_per_100_words: p.hedge_rate_per_100_words,
+            causal_connective_rate_per_100_words: p.causal_connective_rate_per_100_words,
+            contrast_connective_rate_per_100_words: p.contrast_connective_rate_per_100_words,
+            formality_score: p.formality_score,
+            sentiment_polarity: p.sentiment_polarity,
+            sentiment_subjectivity: p.sentiment_subjectivity,
+        }
+    }
+}
+
+#[cfg(feature = "sqlite-backend")]
+impl From<&CorpusProfile> for DisplayProfile {
+    fn from(p: &CorpusProfile) -> Self {
+        Self {
+            type_token_ratio: p.type_token_ratio,
+            avg_word_length: p.avg_word_length,
+            hapax_legomena_ratio: p.hapax_legomena_ratio,
+            avg_sentence_length: p.avg_sentence_length,
+            sentence_length_stddev: p.sentence_length_stddev,
+            comma_rate_per_100_words: p.comma_rate_per_100_words,
+            semicolon_rate_per_100_words: p.semicolon_rate_per_100_words,
+            dash_rate_per_100_words: p.dash_rate_per_100_words,
+            question_rate_per_100_words: p.question_rate_per_100_words,
+            exclamation_rate_per_100_words: p.exclamation_rate_per_100_words,
+            flesch_reading_ease: p.flesch_reading_ease,
+            flesch_kincaid_grade: p.flesch_kincaid_grade,
+            gunning_fog_index: p.gunning_fog_index,
+            first_person_singular_rate_per_100_words: p.first_person_singular_rate_per_100_words,
+            first_person_plural_rate_per_100_words: p.first_person_plural_rate_per_100_words,
+            second_person_rate_per_100_words: p.second_person_rate_per_100_words,
+            imperative_rate: p.imperative_rate,
+            certainty_rate_per_100_words: p.certainty_rate_per_100_words,
+            hedge_rate_per_100_words: p.hedge_rate_per_100_words,
+            causal_connective_rate_per_100_words: p.causal_connective_rate_per_100_words,
+            contrast_connective_rate_per_100_words: p.contrast_connective_rate_per_100_words,
+            formality_score: p.formality_score,
+            sentiment_polarity: p.sentiment_polarity,
+            sentiment_subjectivity: p.sentiment_subjectivity,
+        }
+    }
+}
+
+fn render_display_profile(header: &str, p: &DisplayProfile) -> String {
     format!(
-        "Words: {words}
+        "{header}
 
 Lexical richness
   type-token ratio            {:.3}
@@ -143,6 +240,21 @@ Deferred
     )
 }
 
+fn render_profile(p: &LinguisticProfile, words: u32) -> String {
+    render_display_profile(&format!("Words: {words}"), &p.into())
+}
+
+/// `larc stats`'s renderer — same body as `render_profile`, via
+/// [`render_display_profile`], with the corpus-only header fields
+/// `CorpusProfile` carries that a single `LinguisticProfile` has no use for.
+#[cfg(feature = "sqlite-backend")]
+fn render_corpus_profile(p: &CorpusProfile) -> String {
+    render_display_profile(
+        &format!("Documents: {}   Words: {}", p.document_count, p.total_words),
+        &p.into(),
+    )
+}
+
 fn run_profile(cmd: ProfileCmd) -> Result<(), String> {
     let text = read_input(&cmd.path)?;
     let profile = compute_linguistic_profile(&text);
@@ -174,8 +286,7 @@ mod store {
     use larc_lexicon_engine::backend::SqliteEngine;
     use larc_lexicon_engine::{
         aggregate_corpus_profile, extract_human_turns, flag_pasted_content, word_count, Confidence,
-        CorpusProfile, LexiconEngine, PatternCategory, Register, SourceKind, SourceRef,
-        VoicePattern, VoiceSample,
+        LexiconEngine, PatternCategory, Register, SourceKind, SourceRef, VoicePattern, VoiceSample,
     };
     use uuid::Uuid;
 
@@ -473,7 +584,7 @@ mod store {
                 .map_err(|e| format!("reading {}: {e}", file.display()))?;
             let locator = file.display().to_string();
 
-            for turn in extract_human_turns(&raw) {
+            for (turn_index, turn) in extract_human_turns(&raw).into_iter().enumerate() {
                 scanned_turns += 1;
                 if word_count(&turn.text) < cmd.min_words {
                     skipped_short += 1;
@@ -485,7 +596,16 @@ mod store {
                     .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
                     .map(|t| t.with_timezone(&Utc))
                     .unwrap_or_else(Utc::now);
-                let scope_locator = turn.session_id.clone().unwrap_or_else(|| locator.clone());
+                // `turn_index` disambiguates two turns with identical text in
+                // the same session (e.g. two separate "yes" confirmations) —
+                // without it they'd hash to the same id and silently
+                // overwrite each other. Stable across re-runs of the same
+                // file because `extract_human_turns` always returns turns in
+                // the order they appear in the (append-only) transcript.
+                let scope_locator = format!(
+                    "{}#{turn_index}",
+                    turn.session_id.clone().unwrap_or_else(|| locator.clone())
+                );
                 let source = SourceRef {
                     kind: SourceKind::ClaudeCodeSession,
                     project: cmd.project.clone(),
@@ -711,10 +831,21 @@ mod store {
                 Ok(())
             }
             PatternsAction::Add(c) => {
+                let category: PatternCategory = c.category.into();
+                // Category is folded into the id, not just author+description:
+                // two different patterns for the same author can legitimately
+                // share description wording (plausible when iterating on how
+                // to phrase one) while differing in category or replicate
+                // status — without this they'd hash to the same id and one
+                // would silently overwrite the other via INSERT OR REPLACE.
                 let pattern = VoicePattern {
-                    id: stable_id("pattern", &c.author, &c.description),
+                    id: stable_id(
+                        "pattern",
+                        &c.author,
+                        &format!("{category:?}/{}", c.description),
+                    ),
                     author: c.author,
-                    category: c.category.into(),
+                    category,
                     description: c.description,
                     example_ids: c.example_ids,
                     replicate: !c.anti_pattern,
@@ -744,76 +875,6 @@ mod store {
         json: bool,
         #[command(flatten)]
         store: StoreOpts,
-    }
-
-    fn render_corpus_profile(p: &CorpusProfile) -> String {
-        format!(
-            "Documents: {}   Words: {}
-
-Lexical richness
-  type-token ratio            {:.3}
-  avg word length             {:.2}
-  hapax legomena ratio        {:.3}
-
-Syntactic rhythm
-  avg sentence length         {:.2}
-  sentence length stddev      {:.2}
-  comma      /100w            {:.2}
-  semicolon  /100w            {:.2}
-  dash       /100w            {:.2}
-  question   /100w            {:.2}
-  exclamation/100w            {:.2}
-
-Readability
-  Flesch reading ease         {:.1}
-  Flesch-Kincaid grade        {:.1}
-  Gunning fog index           {:.1}
-
-Person & address
-  1st person singular /100w   {:.2}
-  1st person plural   /100w   {:.2}
-  2nd person          /100w   {:.2}
-  imperative rate             {:.3}
-
-Epistemic stance
-  certainty /100w             {:.2}
-  hedge     /100w             {:.2}
-
-Cognitive connectives
-  causal    /100w             {:.2}
-  contrast  /100w             {:.2}
-
-Deferred
-  formality score             {}
-  sentiment polarity          {}
-  sentiment subjectivity      {}",
-            p.document_count,
-            p.total_words,
-            p.type_token_ratio,
-            p.avg_word_length,
-            p.hapax_legomena_ratio,
-            p.avg_sentence_length,
-            p.sentence_length_stddev,
-            p.comma_rate_per_100_words,
-            p.semicolon_rate_per_100_words,
-            p.dash_rate_per_100_words,
-            p.question_rate_per_100_words,
-            p.exclamation_rate_per_100_words,
-            p.flesch_reading_ease,
-            p.flesch_kincaid_grade,
-            p.gunning_fog_index,
-            p.first_person_singular_rate_per_100_words,
-            p.first_person_plural_rate_per_100_words,
-            p.second_person_rate_per_100_words,
-            p.imperative_rate,
-            p.certainty_rate_per_100_words,
-            p.hedge_rate_per_100_words,
-            p.causal_connective_rate_per_100_words,
-            p.contrast_connective_rate_per_100_words,
-            deferred(p.formality_score, "a POS tagger"),
-            deferred(p.sentiment_polarity, "an affect lexicon"),
-            deferred(p.sentiment_subjectivity, "an affect lexicon"),
-        )
     }
 
     pub async fn run_stats(cmd: StatsCmd) -> Result<(), String> {
@@ -849,6 +910,66 @@ Deferred
             println!("{}", render_corpus_profile(&profile));
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Two turns with identical text in the same session (e.g. two
+        /// separate "yes" confirmations) must not collide: without the
+        /// per-turn index folded into `scope_locator`, both would hash to
+        /// the same id and the second would silently overwrite the first
+        /// via the backend's upsert.
+        #[test]
+        fn duplicate_text_at_different_turn_indices_gets_distinct_ids() {
+            let session = "session-1";
+            let text = "yes";
+            let first = stable_id("claude-session", &format!("{session}#0"), text);
+            let second = stable_id("claude-session", &format!("{session}#1"), text);
+            assert_ne!(
+                first, second,
+                "identical text at different turn indices must not collide"
+            );
+        }
+
+        /// The fix must not break idempotent re-ingest: the same turn at the
+        /// same index in the same session, ingested twice (a re-run over an
+        /// unchanged, append-only transcript), must still produce the same id.
+        #[test]
+        fn same_turn_reingested_at_the_same_index_is_still_idempotent() {
+            let scope_locator = "session-1#3";
+            let text = "Ship the CLI change now please.";
+            let first = stable_id("claude-session", scope_locator, text);
+            let second = stable_id("claude-session", scope_locator, text);
+            assert_eq!(
+                first, second,
+                "re-ingesting the same turn must upsert, not duplicate"
+            );
+        }
+
+        /// Two different patterns for the same author can legitimately share
+        /// description wording while differing in category — folding
+        /// category into the id key keeps them from colliding.
+        #[test]
+        fn patterns_with_shared_description_but_different_category_get_distinct_ids() {
+            let author = "kevin";
+            let description = "Never opens with an apology";
+            let tone_rule_id = stable_id(
+                "pattern",
+                author,
+                &format!("{:?}/{description}", PatternCategory::ToneRule),
+            );
+            let anti_pattern_id = stable_id(
+                "pattern",
+                author,
+                &format!("{:?}/{description}", PatternCategory::AntiPattern),
+            );
+            assert_ne!(
+                tone_rule_id, anti_pattern_id,
+                "same description in a different category must not collide"
+            );
+        }
     }
 }
 
