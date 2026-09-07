@@ -20,7 +20,9 @@ pub mod metrics;
 pub mod schema;
 
 pub use engine::{LexiconEngine, LexiconError, Result};
-pub use ingest::{extract_human_turns, strip_harness_blocks, ExtractedTurn};
+pub use ingest::{
+    extract_human_turns, flag_pasted_content, strip_harness_blocks, ExtractedTurn, PasteSignal,
+};
 pub use metrics::{aggregate_corpus_profile, compute_linguistic_profile, word_count};
 pub use schema::{
     Confidence, CorpusProfile, LinguisticProfile, PatternCategory, Register, SourceKind, SourceRef,

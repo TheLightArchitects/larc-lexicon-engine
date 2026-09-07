@@ -41,8 +41,30 @@
 //! Feeding that into [`crate::compute_linguistic_profile`] corrupts every
 //! measurement it makes — dash rate, sentence length, type-token ratio — with
 //! boilerplate nobody authored. [`strip_harness_blocks`] removes it first.
+//!
+//! # Pasted material
+//!
+//! A fourth contamination vector, distinct from the three above: a turn can
+//! be genuinely human-authored, harness-clean, and *still* not be prose the
+//! author composed — because a chat message can contain a pasted crash
+//! report, job posting, or API/tool schema dump. Measured on one real
+//! 248-sample ingest, 3 turns (1.2%) carried 51.2% of the corpus's words —
+//! a macOS crash report, a job description, and an MCP tool schema — enough
+//! to dominate every word-weighted metric computed over the batch.
+//!
+//! [`flag_pasted_content`] flags candidates with two independent, general
+//! structural signals rather than matching the wording of those three
+//! specific documents, which would never generalize to a different corpus:
+//! a robust length-outlier test against the batch's own word-count
+//! distribution, and detection of label:value / separator-rule line shapes
+//! characteristic of rendered documents rather than typed prose. Matching
+//! [`crate::schema::Confidence`]'s rule that suspect data is *labeled*, not
+//! silently dropped, this only flags — nothing here removes a sample; a
+//! consumer decides what to do with the signal.
 
 use serde::Deserialize;
+
+use crate::metrics::word_count;
 
 /// One human-authored turn recovered from a transcript, already stripped of
 /// harness boilerplate and guaranteed non-empty after trimming.
@@ -239,9 +261,244 @@ fn human_turn_from_entry(entry: RawEntry) -> Option<ExtractedTurn> {
     })
 }
 
+/// A structural signal that one turn's text may be pasted material rather
+/// than prose composed as a chat message. Purely advisory: nothing in this
+/// crate excludes a sample on this basis by itself. Call [`PasteSignal::any`]
+/// to get a single flag, or inspect the two fields to see which signal fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PasteSignal {
+    /// Word count is a robust statistical outlier against the rest of the
+    /// batch it was flagged alongside (see [`flag_pasted_content`]).
+    pub length_outlier: bool,
+    /// The text contains label:value lines or long separator-rule runs
+    /// characteristic of a rendered document (crash report, log, API/tool
+    /// schema) rather than typed prose.
+    pub structural_markup: bool,
+}
+
+impl PasteSignal {
+    pub fn any(&self) -> bool {
+        self.length_outlier || self.structural_markup
+    }
+}
+
+/// Below this batch size there isn't enough data for quartiles to mean
+/// anything, so length-outlier detection falls back to a fixed backstop
+/// instead (Algorithm Baseline T0.3 — default to the most robust general
+/// approach when no data-driven method applies, and document the gap).
+const MIN_BATCH_FOR_QUARTILES: usize = 8;
+
+/// Word count beyond which a turn is flagged regardless of batch shape, used
+/// only when the batch is too small for quartile-based detection. An order
+/// of magnitude past the longest median turn length measured across two very
+/// different registers in this crate's own corpora (12 and 21 words) —
+/// deliberately generous, since a false positive here only adds a warning,
+/// while a false negative lets a genuine outlier through uninspected.
+const SMALL_BATCH_LENGTH_BACKSTOP: usize = 300;
+
+/// Robust length-outlier test using Tukey's far-outlier fence
+/// (`> Q3 + 3 * IQR`) over the batch's own word-count distribution, rather
+/// than a fixed word-count guess that wouldn't generalize across users or
+/// registers. The 3x (not the conventional 1.5x "outlier") multiplier is
+/// deliberately conservative — this only flags for review, so it should
+/// catch documents that dominate the batch, not merely someone's longer
+/// message of the day.
+fn length_outliers(word_counts: &[usize]) -> Vec<bool> {
+    if word_counts.len() < MIN_BATCH_FOR_QUARTILES {
+        return word_counts
+            .iter()
+            .map(|&n| n > SMALL_BATCH_LENGTH_BACKSTOP)
+            .collect();
+    }
+
+    let mut sorted = word_counts.to_vec();
+    sorted.sort_unstable();
+    let quantile = |q: f64| -> f64 {
+        let idx = q * (sorted.len() - 1) as f64;
+        let lo = idx.floor() as usize;
+        let hi = idx.ceil() as usize;
+        if lo == hi {
+            sorted[lo] as f64
+        } else {
+            let frac = idx - lo as f64;
+            sorted[lo] as f64 * (1.0 - frac) + sorted[hi] as f64 * frac
+        }
+    };
+    let q1 = quantile(0.25);
+    let q3 = quantile(0.75);
+    let iqr = q3 - q1;
+    let fence = q3 + 3.0 * iqr;
+
+    word_counts.iter().map(|&n| n as f64 > fence).collect()
+}
+
+/// A line consisting mostly of one repeated separator character, the shape
+/// crash reports and log dumps use for section rules (`------- ... -------`).
+fn is_separator_rule(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.chars().count() < 10 {
+        return false;
+    }
+    for c in ['-', '=', '─', '*', '_'] {
+        if trimmed.chars().filter(|&ch| ch == c).count() as f32 / trimmed.chars().count() as f32
+            > 0.8
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// A `Label: value` line — the shape of crash-report fields (`Code Type:`,
+/// `Exception Type:`), tool/API schema dumps (`Tool name:`, `Full name:`),
+/// and structured logs generally. General by construction: it matches the
+/// *shape* of a rendered document's metadata field, not any specific
+/// document's wording.
+///
+/// The label is capped at 3 words / 24 characters — real metadata field
+/// names are that short by convention. Without this cap, an ordinary
+/// sentence that merely contains a colon partway through ("Corso wanted to
+/// run this by you Canonical copy: …") has an all-alphabetic, capitalized
+/// prefix and would otherwise match; a genuine label never runs that long.
+fn is_label_value_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(colon) = trimmed.find(':') else {
+        return false;
+    };
+    let label = &trimmed[..colon];
+    let after = trimmed[colon + 1..].trim_start();
+    (1..=24).contains(&label.chars().count())
+        && label.split_whitespace().count() <= 3
+        && label.chars().next().is_some_and(|c| c.is_uppercase())
+        && label
+            .chars()
+            .all(|c| c.is_alphanumeric() || " /_'-".contains(c))
+        && !after.is_empty()
+}
+
+/// True when at least 3 lines are separator rules or label:value lines, or
+/// when such lines make up more than a quarter of all non-blank lines —
+/// either is enough structural document-shape to warrant a flag on text of
+/// any length, not just very long pastes.
+pub fn detect_structural_markup(text: &str) -> bool {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return false;
+    }
+    let hits = lines
+        .iter()
+        .filter(|l| is_separator_rule(l) || is_label_value_line(l))
+        .count();
+    hits >= 3 || (hits as f32 / lines.len() as f32) > 0.25
+}
+
+/// Flag which texts in a batch look like pasted material rather than typed
+/// prose. Returns one [`PasteSignal`] per input, in order. See the module
+/// docs for why this exists and why it only flags rather than excludes.
+pub fn flag_pasted_content(texts: &[&str]) -> Vec<PasteSignal> {
+    let word_counts: Vec<usize> = texts.iter().map(|t| word_count(t) as usize).collect();
+    let outliers = length_outliers(&word_counts);
+    texts
+        .iter()
+        .zip(outliers)
+        .map(|(text, length_outlier)| PasteSignal {
+            length_outlier,
+            structural_markup: detect_structural_markup(text),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // These are synthetic and shaped like — but not copies of — the three
+    // real documents that motivated this module, so passing here is
+    // evidence the detector generalizes rather than having been fit to
+    // known text.
+
+    #[test]
+    fn crash_report_shaped_text_is_flagged_by_structural_markup() {
+        let text = "-------------------------------------\n\
+                     Translated Report\n\
+                     -------------------------------------\n\
+                     Process: SomeApp [1234]\n\
+                     Path: /Applications/SomeApp.app/Contents/MacOS/SomeApp\n\
+                     Identifier: com.example.someapp\n\
+                     Version: 4.2.0\n\
+                     Code Type: ARM-64\n\
+                     Exception Type: EXC_BAD_ACCESS\n";
+        assert!(detect_structural_markup(text));
+    }
+
+    #[test]
+    fn tool_schema_shaped_text_is_flagged_by_structural_markup() {
+        let text = "Tool name: search\n\
+                     Full name: mcp__example__search\n\
+                     Description: Searches the index\n\
+                     Parameter: query (string, required)\n\
+                     Parameter: limit (integer, optional)\n";
+        assert!(detect_structural_markup(text));
+    }
+
+    #[test]
+    fn ordinary_directive_prose_is_not_flagged_by_structural_markup() {
+        let text = "Can you check the deploy logs before pushing to main? \
+                     I think the readability formula might be off by a bit, \
+                     but the fix should be simple once we find it.";
+        assert!(!detect_structural_markup(text));
+    }
+
+    #[test]
+    fn a_genuinely_long_message_alone_in_a_small_batch_is_not_flagged() {
+        // Small-batch backstop only fires for extreme length (300+ words),
+        // not merely "longer than usual" — a real detailed message must
+        // survive alongside a couple of short ones.
+        let long_but_real = "So the plan is: first refactor the parser to \
+            separate tokenization from validation, then add a proper error \
+            type instead of returning strings, then wire up the new tests \
+            we discussed, and finally update the README to reflect the new \
+            module layout. I want to do this in that order specifically so \
+            each step is independently reviewable.";
+        let batch = ["push it", "run round 2", long_but_real];
+        let flags = flag_pasted_content(&batch);
+        assert!(!flags[2].length_outlier, "flagged a genuine long message");
+    }
+
+    #[test]
+    fn an_extreme_length_outlier_is_flagged_in_a_small_batch() {
+        let huge = "word ".repeat(500);
+        let batch = ["push it", "run round 2", huge.as_str()];
+        let flags = flag_pasted_content(&batch);
+        assert!(flags[2].length_outlier);
+        assert!(!flags[0].length_outlier);
+        assert!(!flags[1].length_outlier);
+    }
+
+    #[test]
+    fn quartile_based_outlier_detection_fires_on_a_larger_batch() {
+        // 10 ordinary short turns plus one that is ~30x the rest.
+        let mut batch: Vec<String> = (0..10).map(|i| format!("turn number {i}")).collect();
+        batch.push("word ".repeat(300));
+        let refs: Vec<&str> = batch.iter().map(|s| s.as_str()).collect();
+        let flags = flag_pasted_content(&refs);
+        assert!(flags[10].length_outlier);
+        assert!(flags[..10].iter().all(|f| !f.length_outlier));
+    }
+
+    #[test]
+    fn paste_signal_any_is_true_when_either_signal_fires() {
+        let neither = PasteSignal {
+            length_outlier: false,
+            structural_markup: false,
+        };
+        let one = PasteSignal {
+            length_outlier: true,
+            structural_markup: false,
+        };
+        assert!(!neither.any());
+        assert!(one.any());
+    }
 
     #[test]
     fn peer_and_tool_result_turns_are_never_attributed_to_the_human() {

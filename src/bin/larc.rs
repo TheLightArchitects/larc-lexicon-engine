@@ -170,8 +170,8 @@ mod store {
     use clap::ValueEnum;
     use larc_lexicon_engine::backend::SqliteEngine;
     use larc_lexicon_engine::{
-        extract_human_turns, word_count, Confidence, LexiconEngine, PatternCategory, Register,
-        SourceKind, SourceRef, VoicePattern, VoiceSample,
+        extract_human_turns, flag_pasted_content, word_count, Confidence, LexiconEngine,
+        PatternCategory, Register, SourceKind, SourceRef, VoicePattern, VoiceSample,
     };
     use uuid::Uuid;
 
@@ -380,6 +380,10 @@ mod store {
         /// Report what would be ingested without writing to the lexicon.
         #[arg(long)]
         dry_run: bool,
+        /// Drop turns flagged as likely pasted material (see the warning
+        /// list printed by default) instead of ingesting them anyway.
+        #[arg(long)]
+        exclude_pasted: bool,
         #[command(flatten)]
         store: StoreOpts,
     }
@@ -498,6 +502,18 @@ mod store {
             }
         }
 
+        // Paste detection is a batch property (length-outlier is relative to
+        // the rest of this ingest), so it runs once here rather than per turn
+        // during collection above.
+        let texts: Vec<&str> = samples.iter().map(|s| s.text.as_str()).collect();
+        let flags = flag_pasted_content(&texts);
+        let flagged: Vec<usize> = flags
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.any())
+            .map(|(i, _)| i)
+            .collect();
+
         println!(
             "{} transcript(s): {scanned_turns} human turn(s) found, {skipped_short} below \
              --min-words {}, {} to ingest",
@@ -505,6 +521,41 @@ mod store {
             cmd.min_words,
             samples.len()
         );
+
+        if !flagged.is_empty() {
+            let verb = if cmd.exclude_pasted {
+                "excluding"
+            } else {
+                "ingesting anyway — rerun with --exclude-pasted to drop these"
+            };
+            println!(
+                "{} sample(s) look like pasted material ({verb}):",
+                flagged.len()
+            );
+            for &i in &flagged {
+                let reason = match (flags[i].length_outlier, flags[i].structural_markup) {
+                    (true, true) => "length+structure",
+                    (true, false) => "length",
+                    (false, true) => "structure",
+                    (false, false) => unreachable!(),
+                };
+                println!(
+                    "  [{reason}, {}w] {}",
+                    samples[i].word_count,
+                    first_line(&samples[i].text, 80)
+                );
+            }
+        }
+
+        if cmd.exclude_pasted && !flagged.is_empty() {
+            let excluded: std::collections::HashSet<usize> = flagged.into_iter().collect();
+            let mut i = 0usize;
+            samples.retain(|_| {
+                let keep = !excluded.contains(&i);
+                i += 1;
+                keep
+            });
+        }
 
         if cmd.dry_run {
             for s in samples.iter().take(10) {
