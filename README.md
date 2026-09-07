@@ -93,6 +93,8 @@ cargo install --path . --features cli,sqlite-backend
 | `larc ingest file <path> --author X` | Store one file as a single sample. `--confidence`, `--source-kind`, `--register`, `--tags`, `--project`. | `cli,sqlite-backend` |
 | `larc ingest claude-sessions <dir> --author X` | Store every human-authored turn from a directory of session transcripts. `--min-words`, `--dry-run`. | `cli,sqlite-backend` |
 | `larc search <query> [--author X] [--top-k N]` | Embedding similarity search over stored samples. | `cli,sqlite-backend` |
+| `larc stats [author] [--tag T] [--json]` | Correctly pooled `CorpusProfile` over stored samples — the whole population, not a `search` subset. | `cli,sqlite-backend` |
+| `larc distill <author> [--tag T] [--dry-run]` | Derive candidate `VoicePattern`s from measured evidence (opener habits, punctuation, hedging, connective skew) instead of writing them by hand — see below. | `cli,sqlite-backend` |
 | `larc patterns list <author>` / `larc patterns add …` | Read and write distilled `VoicePattern`s. | `cli,sqlite-backend` |
 
 The `cli` feature alone builds only `larc profile`, which needs nothing but the
@@ -141,13 +143,39 @@ Even a correctly identified turn is not clean text: the harness appends
 Those are stripped before profiling, or every metric is computed partly over
 boilerplate nobody wrote.
 
+### `larc distill` — measured patterns, not hand-written ones
+
+A `VoicePattern` written by hand has two structural weaknesses: nothing links
+its description back to the specific samples that support it, and re-running
+the same analysis by hand after the corpus grows has no guarantee it's
+computed the same way twice. `larc distill` fixes both by scanning every
+sample's text individually (never by concatenating them — the same
+turn-fusion mistake `CorpusProfile` exists to avoid) for a fixed set of
+discrete markers — acknowledgment openers, bare-imperative openers, missing
+terminal punctuation, gratitude markers, hedge presence, and a connective-skew
+check read straight from `aggregate_corpus_profile`'s pooled rates. Each
+marker becomes a pattern only once it clears both a minimum sample size and a
+minimum effect size, and every emitted pattern cites the exact count behind
+it plus up to three real `example_ids`.
+
+Pattern ids are deterministic per `(author, signal)`, so re-running `distill`
+as a corpus grows upserts each signal's pattern with fresher numbers rather
+than accumulating duplicates. It will also tell you when your data is dirty:
+on one real corpus, `distill` reported a 13:1 causal-over-contrastive
+connective skew — until three pasted documents identified by the paste guard
+above were removed from storage, after which the same command reported no
+skew at all (the true ratio was ~2:1, under the threshold). The pattern
+wasn't wrong given the input; the input was wrong, and a measured pipeline
+surfaces that instead of hiding it the way a one-off hand analysis would.
+
 ## Status
 
 Core, the `sqlite-backend` reference implementation, and the `larc` CLI are
-implemented and tested. `cargo test --all-features` passes 36/36 — including a
+implemented and tested. `cargo test --all-features` passes 45/45 — including a
 live ingest→embed→store→search round trip, idempotent re-ingest, the
-pattern write/read round trip, and corpus-aggregation correctness (pooled
-rates, sentence-boundary handling, lexical-diversity scoping) — and
+pattern write/read round trip, corpus-aggregation correctness (pooled rates,
+sentence-boundary handling, lexical-diversity scoping), and pattern
+distillation (threshold gating, deterministic ids, evidence linkage) — and
 `cargo clippy --all-targets -- -D warnings` is clean on the default, `cli`,
 and `--all-features` builds.
 

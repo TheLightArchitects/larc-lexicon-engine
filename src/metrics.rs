@@ -97,6 +97,27 @@ pub fn word_count(text: &str) -> u32 {
     tokenize_words(text).len() as u32
 }
 
+/// Whether `text`'s first word is a bare imperative verb — the same
+/// heuristic [`compute_linguistic_profile`]'s `imperative_rate` uses per
+/// sentence, exposed standalone so callers checking one short text (a whole
+/// chat turn, typically one sentence) don't need to duplicate
+/// [`IMPERATIVE_VERBS`] to ask the same question.
+pub fn starts_with_imperative(text: &str) -> bool {
+    tokenize_words(text)
+        .first()
+        .is_some_and(|w| IMPERATIVE_VERBS.contains(&w.as_str()))
+}
+
+/// Whether `text` contains any hedge word or phrase — the same word lists
+/// [`compute_linguistic_profile`]'s `hedge_rate_per_100_words` counts,
+/// exposed as a presence check for callers that want "did this turn hedge
+/// at all" rather than a corpus-wide rate.
+pub fn contains_hedge(text: &str) -> bool {
+    let words = tokenize_words(text);
+    let text_lower = text.to_lowercase();
+    count_word_hits(&words, HEDGE_WORDS) > 0 || count_phrase_hits(&text_lower, HEDGE_PHRASES) > 0
+}
+
 /// Approximate sentence splitter on `.`/`!`/`?`. Does not special-case
 /// abbreviations (e.g. "Dr.", "e.g.") — acceptable for corpus-level
 /// aggregate statistics, not intended for exact sentence boundary detection.

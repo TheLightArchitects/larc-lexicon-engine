@@ -40,6 +40,9 @@ enum Command {
     /// Correctly pooled corpus statistics for one author's stored samples.
     #[cfg(feature = "sqlite-backend")]
     Stats(StatsCmd),
+    /// Derive candidate voice patterns from an author's stored samples.
+    #[cfg(feature = "sqlite-backend")]
+    Distill(DistillCmd),
 }
 
 // ---------------------------------------------------------------------------
@@ -912,6 +915,68 @@ mod store {
         Ok(())
     }
 
+    // -- distill ---------------------------------------------------------
+
+    #[derive(Args)]
+    pub struct DistillCmd {
+        /// Author to derive patterns for.
+        author: String,
+        /// Only include samples carrying this tag (e.g. "professional") —
+        /// derive patterns for one register without a hand-rolled script.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Report what would be derived without writing to the lexicon.
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        store: StoreOpts,
+    }
+
+    pub async fn run_distill(cmd: DistillCmd) -> Result<(), String> {
+        let engine = cmd.store.open()?;
+        let samples = engine
+            .samples_for(Some(&cmd.author))
+            .await
+            .map_err(|e| format!("query failed: {e}"))?;
+
+        let filtered: Vec<VoiceSample> = samples
+            .into_iter()
+            .filter(|s| match &cmd.tag {
+                Some(t) => s.tags.iter().any(|tag| tag == t),
+                None => true,
+            })
+            .collect();
+        let sample_count = filtered.len();
+
+        let patterns = larc_lexicon_engine::distill_patterns(&cmd.author, &filtered);
+
+        if patterns.is_empty() {
+            println!(
+                "no patterns derived from {sample_count} sample(s) — corpus is below the \
+                 minimum size, or no signal cleared its threshold"
+            );
+            return Ok(());
+        }
+
+        for p in &patterns {
+            let marker = if p.replicate { "replicate" } else { "avoid" };
+            println!("{:?} [{marker}] {}", p.category, p.description);
+            println!("  {} example(s)", p.example_ids.len());
+        }
+
+        if cmd.dry_run {
+            println!("dry run — nothing written");
+            return Ok(());
+        }
+
+        let n = engine
+            .save_patterns(&patterns)
+            .await
+            .map_err(|e| format!("save failed: {e}"))?;
+        println!("saved {n} pattern(s)");
+        Ok(())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -974,7 +1039,7 @@ mod store {
 }
 
 #[cfg(feature = "sqlite-backend")]
-use store::{IngestCmd, PatternsCmd, SearchCmd, StatsCmd};
+use store::{DistillCmd, IngestCmd, PatternsCmd, SearchCmd, StatsCmd};
 
 // ---------------------------------------------------------------------------
 
@@ -989,6 +1054,8 @@ async fn run(cli: Cli) -> Result<(), String> {
         Command::Patterns(cmd) => store::run_patterns(cmd).await,
         #[cfg(feature = "sqlite-backend")]
         Command::Stats(cmd) => store::run_stats(cmd).await,
+        #[cfg(feature = "sqlite-backend")]
+        Command::Distill(cmd) => store::run_distill(cmd).await,
     }
 }
 
