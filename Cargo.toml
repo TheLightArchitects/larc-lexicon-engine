@@ -12,13 +12,14 @@ readme = "README.md"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 async-trait = "0.1"
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 fastembed = { version = "5", optional = true }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -29,3 +30,12 @@ default = []
 # Rust, ONNX, offline after first model download) for embeddings. Opt-in --
 # the core crate has zero dependency on either by default.
 sqlite-backend = ["dep:rusqlite", "dep:fastembed", "dep:tokio"]
+# The `larc` binary. On its own this builds only the subcommands that need
+# nothing but the core crate (`larc profile`); combine with `sqlite-backend`
+# to unlock ingest/search/patterns, which require storage and embeddings.
+cli = ["dep:clap", "dep:tokio", "tokio/rt-multi-thread"]
+
+[[bin]]
+name = "larc"
+path = "src/bin/larc.rs"
+required-features = ["cli"]

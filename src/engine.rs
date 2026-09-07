@@ -29,5 +29,31 @@ pub trait LexiconEngine {
         author: Option<&str>,
         top_k: usize,
     ) -> Result<Vec<VoiceSample>>;
+    /// Every stored sample for an author (or the whole lexicon if `None`),
+    /// in no particular order.
+    ///
+    /// Deliberately separate from [`LexiconEngine::search`], which is a
+    /// `top_k` embedding-similarity *ranking* — the wrong tool for anything
+    /// that needs the whole population, such as
+    /// [`crate::metrics::aggregate_corpus_profile`]. There is no `top_k`
+    /// value that means "all of them, unranked," and running a similarity
+    /// search at all costs an embedding computation this method has no use
+    /// for.
+    async fn samples_for(&self, author: Option<&str>) -> Result<Vec<VoiceSample>>;
     async fn patterns_for(&self, author: &str) -> Result<Vec<VoicePattern>>;
+    /// Persist distilled patterns, replacing any existing pattern with the
+    /// same id. Returns how many were written.
+    ///
+    /// Kept separate from [`LexiconEngine::ingest`] because the two layers are
+    /// written under different circumstances: samples are bulk-loaded raw
+    /// evidence, whereas a `VoicePattern` is a reviewed, human-legible claim
+    /// *about* that evidence. Without this method `patterns_for` could only
+    /// ever return empty, since nothing else in the trait can populate it.
+    async fn save_patterns(&self, patterns: &[VoicePattern]) -> Result<usize>;
+    /// Delete stored patterns by id. Ids that don't exist are silently
+    /// no-ops — matching `save_patterns`'s upsert-not-error semantics —
+    /// rather than an error, since "already gone" and "never existed" are
+    /// the same outcome from the caller's perspective. Returns how many
+    /// rows were actually removed.
+    async fn delete_patterns(&self, ids: &[uuid::Uuid]) -> Result<usize>;
 }

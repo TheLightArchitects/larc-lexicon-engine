@@ -81,17 +81,112 @@ built on paraphrased text learns the paraphraser's voice, not the author's
 synthesizing style rules, while still keeping lower-trust samples around
 for topical search.
 
-## Status
-
-Core (`schema` + `metrics` + `engine` trait) and the `sqlite-backend`
-reference implementation are both implemented and tested:
-`cargo test --all-features` passes (7/7, including a live ingest→embed→
-store→search round trip), `cargo clippy --all-features --all-targets` is
-clean on both the default build and the feature-enabled build.
+## The `larc` CLI
 
 ```bash
-cargo build                          # core only, no embedding/storage deps
+cargo install --path . --features cli,sqlite-backend
+```
+
+| Command | What it does | Needs |
+|---|---|---|
+| `larc profile <file>` | Print the `LinguisticProfile` of a file (`-` for stdin). `--json` for the raw struct. | `cli` |
+| `larc ingest file <path>... --author X` | Store one or more files as samples, each file one sample, sharing `--confidence`/`--source-kind`/`--register`/`--tags`/`--project`. Opens the lexicon once and embeds every text in one batch. | `cli,sqlite-backend` |
+| `larc ingest claude-sessions <dir> --author X` | Store every human-authored turn from a directory of session transcripts. `--min-words`, `--dry-run`. | `cli,sqlite-backend` |
+| `larc search <query> [--author X] [--top-k N]` | Embedding similarity search over stored samples. | `cli,sqlite-backend` |
+| `larc stats [author] [--tag T] [--json]` | Correctly pooled `CorpusProfile` over stored samples — the whole population, not a `search` subset. | `cli,sqlite-backend` |
+| `larc distill <author> [--tag T] [--dry-run]` | Derive candidate `VoicePattern`s from measured evidence (opener habits, punctuation, hedging, connective skew) instead of writing them by hand — see below. | `cli,sqlite-backend` |
+| `larc patterns list <author>` / `add …` / `delete <id>` / `delete --author X --all` / `update <id> --author X …` | Read, write, remove, and revise distilled `VoicePattern`s. `update` keeps a pattern's id fixed while changing its wording/category/evidence — the identity-addressed counterpart to `add`'s content-addressed id. | `cli,sqlite-backend` |
+| `larc style-guide <author>` | Render a markdown brief — patterns grouped Replicate/Avoid, each with real verbatim quotes — ready to paste into an LLM prompt. | `cli,sqlite-backend` |
+
+The `cli` feature alone builds only `larc profile`, which needs nothing but the
+core crate. Commands that touch a lexicon are compiled in by `sqlite-backend`,
+rather than appearing in `--help` and failing at runtime.
+
+The database lives at `--db`, else `$LARC_LEXICON_DB`, else
+`~/.larc-lexicon/voice.db`.
+
+Sample ids are UUID v5 over origin + exact text (for session ingest, origin
+includes the turn's position in its session, so two identical turns — two
+separate "yes" confirmations — don't collide), so re-running an ingest as a
+corpus grows **upserts instead of duplicating**, and an edited turn becomes a
+new sample rather than a silent overwrite.
+
+### Why transcript ingest is stricter than it looks
+
+A Claude Code transcript stores several different things under the same
+`"type": "user"` tag. Across 14,425 such entries in one real nine-session
+project:
+
+| `origin.kind` | `content` | count | what it is |
+|---|---|---:|---|
+| absent | array | 11,537 | `tool_result` blocks re-injected as user turns |
+| absent | string | 2,226 | harness/hook-injected synthetic turns |
+| `task-notification` | string | 342 | background-task completion notices |
+| `human` | string | 304 | **the author's typed turns** |
+| `human` | array | 10 | **the author's text, plus an attachment** |
+| `peer` | string | 6 | messages relayed *from another agent session* |
+
+The obvious filter — `type == "user"` with a string body — captures 2,878
+entries, of which **2,574 (89%) are not the author's writing at all**. It would
+attribute harness boilerplate and other agents' prose to the human: exactly the
+contamination `Confidence` exists to prevent, arriving through the ingest path
+instead. So authorship here is decided by `origin.kind == "human"` alone.
+
+Body *shape* is then a recall question rather than an authorship one. Once an
+entry is known to be human-authored, an array body is not a tool result — those
+never carry a `human` origin — but a message with an attachment, and its `text`
+blocks are ordinary prose, often the most opinionated kind since they react to a
+screenshot. Those are kept; only the ones whose entire text is an `[Image #N]`
+marker drop out, having no words to measure.
+
+Even a correctly identified turn is not clean text: the harness appends
+`<system-reminder>` blocks and slash-command echoes to what the human typed.
+Those are stripped before profiling, or every metric is computed partly over
+boilerplate nobody wrote.
+
+### `larc distill` — measured patterns, not hand-written ones
+
+A `VoicePattern` written by hand has two structural weaknesses: nothing links
+its description back to the specific samples that support it, and re-running
+the same analysis by hand after the corpus grows has no guarantee it's
+computed the same way twice. `larc distill` fixes both by scanning every
+sample's text individually (never by concatenating them — the same
+turn-fusion mistake `CorpusProfile` exists to avoid) for a fixed set of
+discrete markers — acknowledgment openers, bare-imperative openers, missing
+terminal punctuation, gratitude markers, hedge presence, and a connective-skew
+check read straight from `aggregate_corpus_profile`'s pooled rates. Each
+marker becomes a pattern only once it clears both a minimum sample size and a
+minimum effect size, and every emitted pattern cites the exact count behind
+it plus up to three real `example_ids`.
+
+Pattern ids are deterministic per `(author, signal)`, so re-running `distill`
+as a corpus grows upserts each signal's pattern with fresher numbers rather
+than accumulating duplicates. It will also tell you when your data is dirty:
+on one real corpus, `distill` reported a 13:1 causal-over-contrastive
+connective skew — until three pasted documents identified by the paste guard
+above were removed from storage, after which the same command reported no
+skew at all (the true ratio was ~2:1, under the threshold). The pattern
+wasn't wrong given the input; the input was wrong, and a measured pipeline
+surfaces that instead of hiding it the way a one-off hand analysis would.
+
+## Status
+
+Core, the `sqlite-backend` reference implementation, and the `larc` CLI are
+implemented and tested. `cargo test --all-features` passes 59/59 — including a
+live ingest→embed→store→search round trip, idempotent re-ingest (single-file
+and batch), the pattern write/read/delete round trip, corpus-aggregation
+correctness (pooled rates, sentence-boundary handling, lexical-diversity
+scoping), pattern distillation (threshold gating, deterministic ids, evidence
+linkage), style-guide rendering (Replicate/Avoid grouping, quote resolution),
+and lazy embedding-model loading — and
+`cargo clippy --all-targets -- -D warnings` is clean on the default, `cli`,
+and `--all-features` builds.
+
+```bash
+cargo build                                   # core only, no embedding/storage deps
 cargo build --features sqlite-backend
+cargo build --features cli                    # `larc profile` only
+cargo build --features cli,sqlite-backend     # the full CLI
 ```
 
 ## License

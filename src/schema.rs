@@ -121,6 +121,73 @@ pub struct LinguisticProfile {
     pub sentiment_subjectivity: Option<f32>,
 }
 
+/// Correctly pooled linguistic statistics over many short texts from one
+/// author — the corpus-level counterpart to [`LinguisticProfile`].
+///
+/// [`LinguisticProfile`] is a single-document function. There is no valid way
+/// to get a corpus-level equivalent by concatenating many documents and
+/// profiling the result once — turns that lack terminal punctuation (the
+/// common case for short, informal samples) get fused across document
+/// boundaries by the sentence splitter, inflating every sentence-derived
+/// field. Averaging many single-document rates is equally invalid wherever
+/// the word-count denominator varies from document to document, which it
+/// always does. Build one with
+/// [`crate::metrics::aggregate_corpus_profile`], which pools every rate as
+/// `sum(hits) / sum(words)` across the whole corpus, computes lexical
+/// diversity from one corpus-wide word-frequency table rather than
+/// per-document unique-word counts (a word appearing once in each of two
+/// documents is not a corpus-level hapax), and pools sentence lengths from
+/// every document's own, independently computed, sentence boundaries.
+///
+/// `document_count` and `total_words` travel with every rate so a consumer
+/// can see the sample size a statistic rests on, rather than reading a
+/// percentage with no denominator.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct CorpusProfile {
+    pub document_count: u32,
+    pub total_words: u32,
+
+    // --- Lexical richness (corpus-wide word-frequency table) ---
+    pub type_token_ratio: f32,
+    pub avg_word_length: f32,
+    pub hapax_legomena_ratio: f32,
+
+    // --- Syntactic rhythm (sentence lengths pooled per-document, never
+    //     from concatenated raw text) ---
+    pub avg_sentence_length: f32,
+    pub sentence_length_stddev: f32,
+    pub comma_rate_per_100_words: f32,
+    pub semicolon_rate_per_100_words: f32,
+    pub dash_rate_per_100_words: f32,
+    pub question_rate_per_100_words: f32,
+    pub exclamation_rate_per_100_words: f32,
+
+    // --- Readability ---
+    pub flesch_reading_ease: f32,
+    pub flesch_kincaid_grade: f32,
+    pub gunning_fog_index: f32,
+
+    // --- Person & address ---
+    pub first_person_singular_rate_per_100_words: f32,
+    pub first_person_plural_rate_per_100_words: f32,
+    pub second_person_rate_per_100_words: f32,
+    pub imperative_rate: f32,
+
+    // --- Epistemic stance ---
+    pub certainty_rate_per_100_words: f32,
+    pub hedge_rate_per_100_words: f32,
+
+    // --- Cognitive/causal connectives ---
+    pub causal_connective_rate_per_100_words: f32,
+    pub contrast_connective_rate_per_100_words: f32,
+
+    // --- Deferred: same caveat as `LinguisticProfile` — measured or `None`,
+    //     never approximated ---
+    pub formality_score: Option<f32>,
+    pub sentiment_polarity: Option<f32>,
+    pub sentiment_subjectivity: Option<f32>,
+}
+
 /// A single verbatim, attributed utterance — the raw evidence unit of the lexicon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceSample {
