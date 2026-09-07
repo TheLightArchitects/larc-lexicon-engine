@@ -55,7 +55,13 @@ fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
 /// download.
 pub struct SqliteEngine {
     conn: Mutex<Connection>,
-    model: Mutex<TextEmbedding>,
+    /// `None` until the first call that actually needs to embed something.
+    /// `patterns_for`/`save_patterns`/`samples_for` never touch this, so a
+    /// command that only reads or writes patterns, or lists samples, never
+    /// pays the ONNX model's load cost — a real latency win for `larc
+    /// stats`/`distill`/`style-guide`/`patterns *`, which have no use for
+    /// an embedding model at all.
+    model: Mutex<Option<TextEmbedding>>,
 }
 
 impl SqliteEngine {
@@ -63,19 +69,39 @@ impl SqliteEngine {
         let conn = Connection::open(db_path).map_err(|e| LexiconError::Storage(e.to_string()))?;
         conn.execute_batch(SCHEMA_SQL)
             .map_err(|e| LexiconError::Storage(e.to_string()))?;
-        let model = TextEmbedding::try_new(TextInitOptions::default())
-            .map_err(|e| LexiconError::Embedding(e.to_string()))?;
         Ok(Self {
             conn: Mutex::new(conn),
-            model: Mutex::new(model),
+            model: Mutex::new(None),
         })
     }
 
-    fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
-        let mut model = self
+    /// Lock the model slot, initializing it on first use, and return the
+    /// guard so a caller can embed through it without a second lock/unlock
+    /// round trip.
+    fn ensure_model(&self) -> Result<std::sync::MutexGuard<'_, Option<TextEmbedding>>> {
+        let mut guard = self
             .model
             .lock()
             .map_err(|_| LexiconError::Embedding("embedding model lock poisoned".into()))?;
+        if guard.is_none() {
+            *guard = Some(
+                TextEmbedding::try_new(TextInitOptions::default())
+                    .map_err(|e| LexiconError::Embedding(e.to_string()))?,
+            );
+        }
+        Ok(guard)
+    }
+
+    #[cfg(test)]
+    fn model_is_loaded(&self) -> bool {
+        self.model.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
+    fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
+        let mut guard = self.ensure_model()?;
+        let model = guard.as_mut().ok_or_else(|| {
+            LexiconError::Embedding("embedding model unexpectedly absent after init".into())
+        })?;
         let mut embeddings = model
             .embed(vec![text], None)
             .map_err(|e| LexiconError::Embedding(e.to_string()))?;
@@ -132,10 +158,10 @@ impl LexiconEngine for SqliteEngine {
         }
         let texts: Vec<&str> = samples.iter().map(|s| s.text.as_str()).collect();
         let embeddings = {
-            let mut model = self
-                .model
-                .lock()
-                .map_err(|_| LexiconError::Embedding("embedding model lock poisoned".into()))?;
+            let mut guard = self.ensure_model()?;
+            let model = guard.as_mut().ok_or_else(|| {
+                LexiconError::Embedding("embedding model unexpectedly absent after init".into())
+            })?;
             model
                 .embed(texts, None)
                 .map_err(|e| LexiconError::Embedding(e.to_string()))?
@@ -241,6 +267,26 @@ impl LexiconEngine for SqliteEngine {
         }
         Ok(patterns.len())
     }
+
+    async fn delete_patterns(&self, ids: &[Uuid]) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| LexiconError::Storage("connection lock poisoned".into()))?;
+        let mut deleted = 0usize;
+        for id in ids {
+            deleted += conn
+                .execute(
+                    "DELETE FROM patterns WHERE id = ?1",
+                    params![id.to_string()],
+                )
+                .map_err(|e| LexiconError::Storage(e.to_string()))?;
+        }
+        Ok(deleted)
+    }
 }
 
 fn row_to_sample_with_embedding(row: &rusqlite::Row) -> rusqlite::Result<(VoiceSample, Vec<f32>)> {
@@ -318,4 +364,52 @@ fn row_to_pattern(row: &rusqlite::Row) -> rusqlite::Result<VoicePattern> {
         example_ids,
         replicate,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tempdir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("larc-lexicon-lazy-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    /// `open` must not pay the ONNX model's load cost for callers that
+    /// never embed anything — `patterns_for`/`save_patterns`/`samples_for`
+    /// have no use for it, and this is what makes `larc patterns`/`larc
+    /// stats`/`larc distill` fast regardless of how large the embedding
+    /// model is.
+    #[tokio::test]
+    async fn open_does_not_eagerly_load_the_embedding_model() {
+        let dir = tempdir();
+        let db_path = dir.join("lexicon.sqlite3");
+        let engine = SqliteEngine::open(&db_path).expect("open sqlite engine");
+        assert!(
+            !engine.model_is_loaded(),
+            "open() must not initialize the embedding model"
+        );
+
+        // Patterns-only operations must not trigger it either.
+        let pattern = VoicePattern {
+            id: Uuid::new_v4(),
+            author: "kevin".to_string(),
+            category: PatternCategory::ToneRule,
+            description: "test".to_string(),
+            example_ids: vec![],
+            replicate: true,
+        };
+        engine
+            .save_patterns(&[pattern])
+            .await
+            .expect("save patterns");
+        engine.patterns_for("kevin").await.expect("patterns_for");
+        assert!(
+            !engine.model_is_loaded(),
+            "reading/writing patterns must not load the embedding model"
+        );
+
+        std::fs::remove_file(&db_path).ok();
+    }
 }

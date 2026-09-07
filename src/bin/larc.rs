@@ -464,8 +464,13 @@ mod store {
 
     #[derive(Args)]
     struct IngestFileCmd {
-        /// File whose entire contents become one sample.
-        path: PathBuf,
+        /// One or more files, each ingested as a single sample sharing the
+        /// same --author/--confidence/--source-kind/--tags. A single
+        /// `larc ingest file a.txt b.txt c.txt` opens the lexicon once and
+        /// embeds every text in one batch, instead of paying per-process
+        /// startup and per-call embedding overhead for each file.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
         #[arg(long)]
         author: String,
         #[arg(long, value_enum, default_value = "verbatim")]
@@ -543,34 +548,37 @@ mod store {
     }
 
     async fn run_ingest_file(cmd: IngestFileCmd) -> Result<(), String> {
-        let text = std::fs::read_to_string(&cmd.path)
-            .map_err(|e| format!("reading {}: {e}", cmd.path.display()))?;
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            return Err(format!("{} is empty", cmd.path.display()));
-        }
+        let mut samples = Vec::with_capacity(cmd.paths.len());
+        for path in &cmd.paths {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("reading {}: {e}", path.display()))?;
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                return Err(format!("{} is empty", path.display()));
+            }
 
-        let locator = cmd.path.display().to_string();
-        let source = SourceRef {
-            kind: cmd.source_kind.into(),
-            project: cmd.project,
-            session_id: None,
-            locator: locator.clone(),
-        };
-        let sample = build_sample(
-            stable_id("file", &locator, &text),
-            &cmd.author,
-            text,
-            source,
-            Utc::now(),
-            cmd.confidence.into(),
-            cmd.register.map(Into::into),
-            cmd.tags,
-        );
+            let locator = path.display().to_string();
+            let source = SourceRef {
+                kind: cmd.source_kind.into(),
+                project: cmd.project.clone(),
+                session_id: None,
+                locator: locator.clone(),
+            };
+            samples.push(build_sample(
+                stable_id("file", &locator, &text),
+                &cmd.author,
+                text,
+                source,
+                Utc::now(),
+                cmd.confidence.into(),
+                cmd.register.map(Into::into),
+                cmd.tags.clone(),
+            ));
+        }
 
         let engine = cmd.store.open()?;
         let n = engine
-            .ingest(&[sample])
+            .ingest(&samples)
             .await
             .map_err(|e| format!("ingest failed: {e}"))?;
         println!("ingested {n} sample(s)");
@@ -793,6 +801,11 @@ mod store {
         List(PatternsListCmd),
         /// Record a distilled pattern.
         Add(PatternsAddCmd),
+        /// Delete a pattern by id, or every pattern for an author.
+        Delete(PatternsDeleteCmd),
+        /// Revise an existing pattern's wording, category, replicate flag,
+        /// or evidence, keeping its id.
+        Update(PatternsUpdateCmd),
     }
 
     #[derive(Args)]
@@ -820,6 +833,56 @@ mod store {
         /// typo), rather than as authentic voice worth replicating.
         #[arg(long)]
         anti_pattern: bool,
+        #[command(flatten)]
+        store: StoreOpts,
+    }
+
+    #[derive(Args)]
+    struct PatternsDeleteCmd {
+        /// Pattern id to delete. Omit when using --author with --all.
+        id: Option<Uuid>,
+        /// Author whose patterns to delete — only meaningful with --all.
+        #[arg(long, requires = "all")]
+        author: Option<String>,
+        /// Delete every pattern for --author, instead of one by id.
+        #[arg(long, requires = "author")]
+        all: bool,
+        #[command(flatten)]
+        store: StoreOpts,
+    }
+
+    /// Revise an existing pattern in place.
+    ///
+    /// Deliberately identity-addressed rather than content-addressed: `add`
+    /// derives a pattern's id from `(author, category, description)`, so
+    /// changing the wording there creates a *new* pattern, orphaning the
+    /// old one. `update` takes the id as input and keeps it fixed no matter
+    /// what else changes — the escape hatch for fixing a typo or tightening
+    /// a description without losing the pattern's identity, its existing
+    /// `example_ids`, or having to delete-then-re-add by hand.
+    #[derive(Args)]
+    struct PatternsUpdateCmd {
+        /// Id of the pattern to update.
+        id: Uuid,
+        /// Author the pattern belongs to.
+        #[arg(long)]
+        author: String,
+        /// New description. Omit to keep the existing one.
+        #[arg(long)]
+        description: Option<String>,
+        /// New category. Omit to keep the existing one.
+        #[arg(long, value_enum)]
+        category: Option<PatternCategoryArg>,
+        /// Mark as an anti-pattern (never reproduce).
+        #[arg(long, conflicts_with = "replicate")]
+        anti_pattern: bool,
+        /// Mark as a pattern to replicate.
+        #[arg(long)]
+        replicate: bool,
+        /// Additional sample id to link as evidence. Repeatable, and added
+        /// to the existing example_ids rather than replacing them.
+        #[arg(long = "add-example-id")]
+        add_example_ids: Vec<Uuid>,
         #[command(flatten)]
         store: StoreOpts,
     }
@@ -873,6 +936,70 @@ mod store {
                     .await
                     .map_err(|e| format!("save failed: {e}"))?;
                 println!("saved {n} pattern(s)");
+                Ok(())
+            }
+            PatternsAction::Delete(c) => {
+                let engine = c.store.open()?;
+                let ids: Vec<Uuid> = if c.all {
+                    // `requires = "author"` on --all guarantees this is Some.
+                    let author = c.author.as_deref().unwrap_or_default();
+                    engine
+                        .patterns_for(author)
+                        .await
+                        .map_err(|e| format!("query failed: {e}"))?
+                        .into_iter()
+                        .map(|p| p.id)
+                        .collect()
+                } else if let Some(id) = c.id {
+                    vec![id]
+                } else {
+                    return Err(
+                        "specify a pattern id, or --author X --all to delete every pattern \
+                         for that author"
+                            .to_string(),
+                    );
+                };
+                let n = engine
+                    .delete_patterns(&ids)
+                    .await
+                    .map_err(|e| format!("delete failed: {e}"))?;
+                println!("deleted {n} pattern(s)");
+                Ok(())
+            }
+            PatternsAction::Update(c) => {
+                let engine = c.store.open()?;
+                let existing = engine
+                    .patterns_for(&c.author)
+                    .await
+                    .map_err(|e| format!("query failed: {e}"))?
+                    .into_iter()
+                    .find(|p| p.id == c.id)
+                    .ok_or_else(|| {
+                        format!("no pattern with id {} for author {}", c.id, c.author)
+                    })?;
+
+                let mut example_ids = existing.example_ids;
+                example_ids.extend(c.add_example_ids);
+
+                let updated = VoicePattern {
+                    id: c.id,
+                    author: c.author,
+                    category: c.category.map(Into::into).unwrap_or(existing.category),
+                    description: c.description.unwrap_or(existing.description),
+                    example_ids,
+                    replicate: if c.anti_pattern {
+                        false
+                    } else if c.replicate {
+                        true
+                    } else {
+                        existing.replicate
+                    },
+                };
+                let n = engine
+                    .save_patterns(&[updated])
+                    .await
+                    .map_err(|e| format!("save failed: {e}"))?;
+                println!("updated {n} pattern(s)");
                 Ok(())
             }
         }

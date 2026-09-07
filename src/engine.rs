@@ -50,4 +50,10 @@ pub trait LexiconEngine {
     /// *about* that evidence. Without this method `patterns_for` could only
     /// ever return empty, since nothing else in the trait can populate it.
     async fn save_patterns(&self, patterns: &[VoicePattern]) -> Result<usize>;
+    /// Delete stored patterns by id. Ids that don't exist are silently
+    /// no-ops — matching `save_patterns`'s upsert-not-error semantics —
+    /// rather than an error, since "already gone" and "never existed" are
+    /// the same outcome from the caller's perspective. Returns how many
+    /// rows were actually removed.
+    async fn delete_patterns(&self, ids: &[uuid::Uuid]) -> Result<usize>;
 }

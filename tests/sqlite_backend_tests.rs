@@ -189,6 +189,58 @@ async fn samples_for_returns_the_whole_population_not_a_ranked_subset() {
     std::fs::remove_file(&db_path).ok();
 }
 
+/// `delete_patterns` must remove exactly the ids given, leave everything
+/// else untouched, and treat a nonexistent id as a no-op rather than an
+/// error — matching `save_patterns`'s upsert-not-error convention, since
+/// "already gone" and "never existed" are the same outcome to a caller.
+#[tokio::test]
+async fn delete_patterns_removes_only_the_given_ids() {
+    let dir = tempdir();
+    let db_path = dir.join("lexicon.sqlite3");
+    let engine = SqliteEngine::open(&db_path).expect("open sqlite engine");
+
+    let keep = VoicePattern {
+        id: Uuid::new_v4(),
+        author: "kevin".to_string(),
+        category: PatternCategory::Opener,
+        description: "keep this one".to_string(),
+        example_ids: vec![],
+        replicate: true,
+    };
+    let remove = VoicePattern {
+        id: Uuid::new_v4(),
+        author: "kevin".to_string(),
+        category: PatternCategory::ToneRule,
+        description: "delete this one".to_string(),
+        example_ids: vec![],
+        replicate: true,
+    };
+    engine
+        .save_patterns(&[keep.clone(), remove.clone()])
+        .await
+        .expect("save patterns");
+
+    let deleted = engine
+        .delete_patterns(&[remove.id])
+        .await
+        .expect("delete_patterns");
+    assert_eq!(deleted, 1);
+
+    let remaining = engine.patterns_for("kevin").await.expect("patterns_for");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, keep.id);
+
+    // Deleting an id that no longer exists (or never did) is a no-op, not
+    // an error.
+    let deleted_again = engine
+        .delete_patterns(&[remove.id, Uuid::new_v4()])
+        .await
+        .expect("delete_patterns on absent ids");
+    assert_eq!(deleted_again, 0);
+
+    std::fs::remove_file(&db_path).ok();
+}
+
 fn tempdir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("larc-lexicon-test-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
