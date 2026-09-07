@@ -96,6 +96,7 @@ cargo install --path . --features cli,sqlite-backend
 | `larc stats [author] [--tag T] [--json]` | Correctly pooled `CorpusProfile` over stored samples — the whole population, not a `search` subset. | `cli,sqlite-backend` |
 | `larc distill <author> [--tag T] [--dry-run]` | Derive candidate `VoicePattern`s from measured evidence (opener habits, punctuation, hedging, connective skew) instead of writing them by hand — see below. | `cli,sqlite-backend` |
 | `larc patterns list <author>` / `larc patterns add …` | Read and write distilled `VoicePattern`s. | `cli,sqlite-backend` |
+| `larc style-guide <author>` | Render a markdown brief — patterns grouped Replicate/Avoid, each with real verbatim quotes — ready to paste into an LLM prompt. | `cli,sqlite-backend` |
 
 The `cli` feature alone builds only `larc profile`, which needs nothing but the
 core crate. Commands that touch a lexicon are compiled in by `sqlite-backend`,
@@ -171,11 +172,12 @@ surfaces that instead of hiding it the way a one-off hand analysis would.
 ## Status
 
 Core, the `sqlite-backend` reference implementation, and the `larc` CLI are
-implemented and tested. `cargo test --all-features` passes 45/45 — including a
+implemented and tested. `cargo test --all-features` passes 52/52 — including a
 live ingest→embed→store→search round trip, idempotent re-ingest, the
 pattern write/read round trip, corpus-aggregation correctness (pooled rates,
-sentence-boundary handling, lexical-diversity scoping), and pattern
-distillation (threshold gating, deterministic ids, evidence linkage) — and
+sentence-boundary handling, lexical-diversity scoping), pattern distillation
+(threshold gating, deterministic ids, evidence linkage), and style-guide
+rendering (Replicate/Avoid grouping, quote resolution) — and
 `cargo clippy --all-targets -- -D warnings` is clean on the default, `cli`,
 and `--all-features` builds.
 
