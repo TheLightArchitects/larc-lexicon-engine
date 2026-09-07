@@ -416,8 +416,7 @@ mod store {
     /// makes re-ingest idempotent, and makes an edited turn a genuinely new
     /// sample rather than a silent overwrite.
     fn stable_id(scope: &str, locator: &str, text: &str) -> Uuid {
-        let key = format!("larc/{scope}/{locator}/{text}");
-        Uuid::new_v5(&Uuid::NAMESPACE_URL, key.as_bytes())
+        larc_lexicon_engine::stable_uuid(&[scope, locator, text])
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -663,11 +662,15 @@ mod store {
                 flagged.len()
             );
             for &i in &flagged {
+                // `(false, false)` can't occur today — `flagged` is
+                // pre-filtered by `PasteSignal::any()` — but a display
+                // label, not a panic, is the safe choice if that filter
+                // is ever refactored to include unflagged indices.
                 let reason = match (flags[i].length_outlier, flags[i].structural_markup) {
                     (true, true) => "length+structure",
                     (true, false) => "length",
                     (false, true) => "structure",
-                    (false, false) => unreachable!(),
+                    (false, false) => "flagged",
                 };
                 println!(
                     "  [{reason}, {}w] {}",
@@ -710,14 +713,22 @@ mod store {
         Ok(())
     }
 
-    fn first_line(text: &str, max: usize) -> String {
-        let line = text.lines().next().unwrap_or_default().trim();
-        let truncated: String = line.chars().take(max).collect();
-        if line.chars().count() > max {
+    /// Truncate `s` to `max` chars, appending an ellipsis if anything was
+    /// cut. Shared by every preview/quote renderer so a future fix to the
+    /// truncation itself (a Unicode-boundary case, an off-by-one) can't be
+    /// applied to one caller and missed on another.
+    fn truncate_with_ellipsis(s: &str, max: usize) -> String {
+        let truncated: String = s.chars().take(max).collect();
+        if s.chars().count() > max {
             format!("{truncated}…")
         } else {
             truncated
         }
+    }
+
+    fn first_line(text: &str, max: usize) -> String {
+        let line = text.lines().next().unwrap_or_default().trim();
+        truncate_with_ellipsis(line, max)
     }
 
     // -- search ------------------------------------------------------------
@@ -1011,12 +1022,7 @@ mod store {
     /// corpus's word count.
     fn quote(text: &str, max: usize) -> String {
         let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let truncated: String = collapsed.chars().take(max).collect();
-        if collapsed.chars().count() > max {
-            format!("{truncated}…")
-        } else {
-            truncated
-        }
+        truncate_with_ellipsis(&collapsed, max)
     }
 
     fn render_style_guide(

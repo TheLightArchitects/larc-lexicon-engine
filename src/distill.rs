@@ -64,10 +64,7 @@ const GRATITUDE_MARKERS: &[&str] = &["please", "thank", "thanks", "appreciate", 
 const MAX_EXAMPLE_IDS: usize = 3;
 
 fn stable_pattern_id(author: &str, signal: &str) -> Uuid {
-    Uuid::new_v5(
-        &Uuid::NAMESPACE_URL,
-        format!("larc/distill/{author}/{signal}").as_bytes(),
-    )
+    crate::stable_uuid(&["distill", author, signal])
 }
 
 fn first_word_lower(text: &str) -> Option<String> {

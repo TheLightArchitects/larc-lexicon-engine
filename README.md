@@ -172,7 +172,7 @@ surfaces that instead of hiding it the way a one-off hand analysis would.
 ## Status
 
 Core, the `sqlite-backend` reference implementation, and the `larc` CLI are
-implemented and tested. `cargo test --all-features` passes 52/52 — including a
+implemented and tested. `cargo test --all-features` passes 57/57 — including a
 live ingest→embed→store→search round trip, idempotent re-ingest, the
 pattern write/read round trip, corpus-aggregation correctness (pooled rates,
 sentence-boundary handling, lexical-diversity scoping), pattern distillation

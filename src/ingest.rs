@@ -155,7 +155,14 @@ fn strip_attachment_markers(text: &str) -> String {
     while let Some(start) = rest.find("[Image #") {
         let after = &rest[start..];
         match after.find(']') {
-            Some(end) if after[..end].chars().skip(8).all(|c| c.is_ascii_digit()) => {
+            // `.count() > 8`, not just the `.all()` below: on an empty
+            // iterator (a bare "[Image #]" with zero digits) `.all()` is
+            // vacuously true, which would otherwise strip literal text
+            // that merely mentions the marker format with no number in it.
+            Some(end)
+                if after[..end].chars().count() > 8
+                    && after[..end].chars().skip(8).all(|c| c.is_ascii_digit()) =>
+            {
                 out.push_str(&rest[..start]);
                 rest = &after[end + 1..];
             }
@@ -219,9 +226,44 @@ fn strip_tag_block(text: &str, tag: &str) -> String {
         }
 
         out.push_str(&rest[..start]);
-        match after_name.find(&close) {
+        match find_balanced_close(after_name, &open_prefix, &close) {
             Some(rel_end) => rest = &after_name[rel_end + close.len()..],
             None => return out,
+        }
+    }
+}
+
+/// Find the close tag matching the open tag whose contents start at
+/// `after_name`, treating a nested instance of the *same* open tag as
+/// increasing nesting depth rather than ending the block at the first
+/// `</tag>` found. Without this, a block whose content happens to contain
+/// another instance of the same tag — a pasted transcript excerpt quoting
+/// one, for example — closes at the inner tag, leaving a dangling
+/// `</tag>` string and the unremoved tail of the outer block in the
+/// output. A nested *self-closing* instance of the same tag doesn't open a
+/// paired block, so it's skipped rather than counted.
+fn find_balanced_close(after_name: &str, open_prefix: &str, close: &str) -> Option<usize> {
+    let mut depth = 1u32;
+    let mut pos = 0usize;
+    loop {
+        let next_open = after_name[pos..].find(open_prefix).map(|i| pos + i);
+        let next_close = after_name[pos..].find(close).map(|i| pos + i);
+        match (next_open, next_close) {
+            (Some(o), Some(c)) if o < c => {
+                let nested_after_name = &after_name[o + open_prefix.len()..];
+                pos = o + open_prefix.len();
+                if self_closing_end(nested_after_name).is_none() {
+                    depth += 1;
+                }
+            }
+            (_, Some(c)) => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(c);
+                }
+                pos = c + close.len();
+            }
+            (_, None) => return None,
         }
     }
 }
@@ -560,6 +602,19 @@ mod tests {
         );
     }
 
+    /// A bare `[Image #]` with zero digits must be kept: `.all()` over the
+    /// (empty) digit-check iterator is vacuously true, so without an
+    /// explicit non-empty check this would be wrongly stripped as if it
+    /// were a real marker, deleting literal text that merely mentions the
+    /// marker format.
+    #[test]
+    fn bare_marker_with_no_digits_is_not_stripped() {
+        assert_eq!(
+            strip_attachment_markers("the format is [Image #] then digits"),
+            "the format is [Image #] then digits"
+        );
+    }
+
     #[test]
     fn harness_blocks_are_stripped_from_human_text() {
         let raw = "Real sentence here.\n<system-reminder>\nInjected noise — with an em dash.\n</system-reminder>";
@@ -588,6 +643,30 @@ mod tests {
             strip_harness_blocks(raw),
             "Real words.  more real words that should be kept"
         );
+    }
+
+    /// A harness block whose own content quotes another instance of the
+    /// same tag — plausible for this crate specifically, since a user
+    /// working on transcript-processing tooling might paste an excerpt
+    /// that itself contains a `<system-reminder>` — must close at its own
+    /// matching close tag, not at the inner one. Closing early would leave
+    /// a dangling `</system-reminder>` string and the outer block's tail
+    /// in the output.
+    #[test]
+    fn harness_block_with_a_nested_same_tag_instance_closes_at_the_outer_tag() {
+        let raw = "<system-reminder>outer <system-reminder>inner</system-reminder> tail</system-reminder> more real prose";
+        assert_eq!(strip_harness_blocks(raw), "more real prose");
+    }
+
+    /// A nested *self-closing* instance of the same tag name doesn't open a
+    /// paired block, so it must not consume a depth level — otherwise the
+    /// real close tag would look one level too deep and the block would
+    /// swallow real text past its actual end.
+    #[test]
+    fn nested_self_closing_instance_of_the_same_tag_does_not_add_depth() {
+        let raw =
+            "<system-reminder>outer <system-reminder/> tail</system-reminder> more real prose";
+        assert_eq!(strip_harness_blocks(raw), "more real prose");
     }
 
     #[test]
