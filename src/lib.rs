@@ -21,8 +21,8 @@ pub mod schema;
 
 pub use engine::{LexiconEngine, LexiconError, Result};
 pub use ingest::{extract_human_turns, strip_harness_blocks, ExtractedTurn};
-pub use metrics::{compute_linguistic_profile, word_count};
+pub use metrics::{aggregate_corpus_profile, compute_linguistic_profile, word_count};
 pub use schema::{
-    Confidence, LinguisticProfile, PatternCategory, Register, SourceKind, SourceRef, VoicePattern,
-    VoiceSample,
+    Confidence, CorpusProfile, LinguisticProfile, PatternCategory, Register, SourceKind, SourceRef,
+    VoicePattern, VoiceSample,
 };
