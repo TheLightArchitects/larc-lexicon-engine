@@ -3,8 +3,8 @@
 use chrono::Utc;
 use larc_lexicon_engine::backend::SqliteEngine;
 use larc_lexicon_engine::{
-    compute_linguistic_profile, word_count, Confidence, LexiconEngine, PatternCategory, SourceKind,
-    SourceRef, VoicePattern, VoiceSample,
+    aggregate_corpus_profile, compute_linguistic_profile, word_count, Confidence, LexiconEngine,
+    PatternCategory, SourceKind, SourceRef, VoicePattern, VoiceSample,
 };
 use uuid::Uuid;
 
@@ -145,6 +145,46 @@ async fn patterns_save_and_read_back_round_trip() {
             .is_empty(),
         "patterns must be scoped to their author"
     );
+
+    std::fs::remove_file(&db_path).ok();
+}
+
+/// `samples_for` is a listing, not a ranked `search` — it must return every
+/// stored sample for an author, never a `top_k`-limited subset, since
+/// `aggregate_corpus_profile` (what `larc stats` calls it for) needs the
+/// whole population to pool correctly.
+#[tokio::test]
+async fn samples_for_returns_the_whole_population_not_a_ranked_subset() {
+    let dir = tempdir();
+    let db_path = dir.join("lexicon.sqlite3");
+    let engine = SqliteEngine::open(&db_path).expect("open sqlite engine");
+
+    let kevin_samples: Vec<VoiceSample> = (0..5)
+        .map(|i| sample("kevin", &format!("This is sample number {i} for kevin.")))
+        .collect();
+    engine.ingest(&kevin_samples).await.expect("ingest kevin");
+    engine
+        .ingest(&[sample("someone-else", "A different author's sample.")])
+        .await
+        .expect("ingest other author");
+
+    let kevin_all = engine
+        .samples_for(Some("kevin"))
+        .await
+        .expect("samples_for kevin");
+    assert_eq!(
+        kevin_all.len(),
+        5,
+        "samples_for must return every sample, not a top_k-limited subset"
+    );
+
+    let everyone = engine.samples_for(None).await.expect("samples_for all");
+    assert_eq!(everyone.len(), 6, "None must return the whole lexicon");
+
+    // Integration check: the actual pipeline `larc stats` runs.
+    let texts: Vec<&str> = kevin_all.iter().map(|s| s.text.as_str()).collect();
+    let profile = aggregate_corpus_profile(texts);
+    assert_eq!(profile.document_count, 5);
 
     std::fs::remove_file(&db_path).ok();
 }

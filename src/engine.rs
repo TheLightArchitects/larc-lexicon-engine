@@ -29,6 +29,17 @@ pub trait LexiconEngine {
         author: Option<&str>,
         top_k: usize,
     ) -> Result<Vec<VoiceSample>>;
+    /// Every stored sample for an author (or the whole lexicon if `None`),
+    /// in no particular order.
+    ///
+    /// Deliberately separate from [`LexiconEngine::search`], which is a
+    /// `top_k` embedding-similarity *ranking* — the wrong tool for anything
+    /// that needs the whole population, such as
+    /// [`crate::metrics::aggregate_corpus_profile`]. There is no `top_k`
+    /// value that means "all of them, unranked," and running a similarity
+    /// search at all costs an embedding computation this method has no use
+    /// for.
+    async fn samples_for(&self, author: Option<&str>) -> Result<Vec<VoiceSample>>;
     async fn patterns_for(&self, author: &str) -> Result<Vec<VoicePattern>>;
     /// Persist distilled patterns, replacing any existing pattern with the
     /// same id. Returns how many were written.

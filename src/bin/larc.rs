@@ -35,6 +35,9 @@ enum Command {
     /// Read and write distilled voice patterns.
     #[cfg(feature = "sqlite-backend")]
     Patterns(PatternsCmd),
+    /// Correctly pooled corpus statistics for one author's stored samples.
+    #[cfg(feature = "sqlite-backend")]
+    Stats(StatsCmd),
 }
 
 // ---------------------------------------------------------------------------
@@ -170,8 +173,9 @@ mod store {
     use clap::ValueEnum;
     use larc_lexicon_engine::backend::SqliteEngine;
     use larc_lexicon_engine::{
-        extract_human_turns, flag_pasted_content, word_count, Confidence, LexiconEngine,
-        PatternCategory, Register, SourceKind, SourceRef, VoicePattern, VoiceSample,
+        aggregate_corpus_profile, extract_human_turns, flag_pasted_content, word_count, Confidence,
+        CorpusProfile, LexiconEngine, PatternCategory, Register, SourceKind, SourceRef,
+        VoicePattern, VoiceSample,
     };
     use uuid::Uuid;
 
@@ -725,10 +729,131 @@ mod store {
             }
         }
     }
+
+    // -- stats ---------------------------------------------------------
+
+    #[derive(Args)]
+    pub struct StatsCmd {
+        /// Author to compute statistics for. Omit for the whole lexicon.
+        author: Option<String>,
+        /// Only include samples carrying this tag (e.g. "professional") —
+        /// compares registers without a hand-rolled script.
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        store: StoreOpts,
+    }
+
+    fn render_corpus_profile(p: &CorpusProfile) -> String {
+        format!(
+            "Documents: {}   Words: {}
+
+Lexical richness
+  type-token ratio            {:.3}
+  avg word length             {:.2}
+  hapax legomena ratio        {:.3}
+
+Syntactic rhythm
+  avg sentence length         {:.2}
+  sentence length stddev      {:.2}
+  comma      /100w            {:.2}
+  semicolon  /100w            {:.2}
+  dash       /100w            {:.2}
+  question   /100w            {:.2}
+  exclamation/100w            {:.2}
+
+Readability
+  Flesch reading ease         {:.1}
+  Flesch-Kincaid grade        {:.1}
+  Gunning fog index           {:.1}
+
+Person & address
+  1st person singular /100w   {:.2}
+  1st person plural   /100w   {:.2}
+  2nd person          /100w   {:.2}
+  imperative rate             {:.3}
+
+Epistemic stance
+  certainty /100w             {:.2}
+  hedge     /100w             {:.2}
+
+Cognitive connectives
+  causal    /100w             {:.2}
+  contrast  /100w             {:.2}
+
+Deferred
+  formality score             {}
+  sentiment polarity          {}
+  sentiment subjectivity      {}",
+            p.document_count,
+            p.total_words,
+            p.type_token_ratio,
+            p.avg_word_length,
+            p.hapax_legomena_ratio,
+            p.avg_sentence_length,
+            p.sentence_length_stddev,
+            p.comma_rate_per_100_words,
+            p.semicolon_rate_per_100_words,
+            p.dash_rate_per_100_words,
+            p.question_rate_per_100_words,
+            p.exclamation_rate_per_100_words,
+            p.flesch_reading_ease,
+            p.flesch_kincaid_grade,
+            p.gunning_fog_index,
+            p.first_person_singular_rate_per_100_words,
+            p.first_person_plural_rate_per_100_words,
+            p.second_person_rate_per_100_words,
+            p.imperative_rate,
+            p.certainty_rate_per_100_words,
+            p.hedge_rate_per_100_words,
+            p.causal_connective_rate_per_100_words,
+            p.contrast_connective_rate_per_100_words,
+            deferred(p.formality_score, "a POS tagger"),
+            deferred(p.sentiment_polarity, "an affect lexicon"),
+            deferred(p.sentiment_subjectivity, "an affect lexicon"),
+        )
+    }
+
+    pub async fn run_stats(cmd: StatsCmd) -> Result<(), String> {
+        let engine = cmd.store.open()?;
+        let samples = engine
+            .samples_for(cmd.author.as_deref())
+            .await
+            .map_err(|e| format!("query failed: {e}"))?;
+
+        let filtered: Vec<&VoiceSample> = samples
+            .iter()
+            .filter(|s| match &cmd.tag {
+                Some(t) => s.tags.iter().any(|tag| tag == t),
+                None => true,
+            })
+            .collect();
+        let texts: Vec<&str> = filtered.iter().map(|s| s.text.as_str()).collect();
+        let profile = aggregate_corpus_profile(texts);
+
+        if cmd.json {
+            let json =
+                serde_json::to_string_pretty(&profile).map_err(|e| format!("serializing: {e}"))?;
+            println!("{json}");
+        } else if profile.document_count == 0 {
+            println!(
+                "no samples found{}",
+                cmd.author
+                    .as_deref()
+                    .map(|a| format!(" for {a}"))
+                    .unwrap_or_default()
+            );
+        } else {
+            println!("{}", render_corpus_profile(&profile));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "sqlite-backend")]
-use store::{IngestCmd, PatternsCmd, SearchCmd};
+use store::{IngestCmd, PatternsCmd, SearchCmd, StatsCmd};
 
 // ---------------------------------------------------------------------------
 
@@ -741,6 +866,8 @@ async fn run(cli: Cli) -> Result<(), String> {
         Command::Search(cmd) => store::run_search(cmd).await,
         #[cfg(feature = "sqlite-backend")]
         Command::Patterns(cmd) => store::run_patterns(cmd).await,
+        #[cfg(feature = "sqlite-backend")]
+        Command::Stats(cmd) => store::run_stats(cmd).await,
     }
 }
 

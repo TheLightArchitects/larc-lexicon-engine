@@ -83,6 +83,45 @@ impl SqliteEngine {
             .pop()
             .ok_or_else(|| LexiconError::Embedding("fastembed returned no embedding".into()))
     }
+
+    /// Every stored sample (optionally scoped to one author) with its
+    /// embedding — the shared substrate `search` ranks and `samples_for`
+    /// returns unranked. Kept as one query so the two can never drift onto
+    /// different column lists or filters.
+    fn select_samples_with_embedding(
+        &self,
+        author: Option<&str>,
+    ) -> Result<Vec<(VoiceSample, Vec<f32>)>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| LexiconError::Storage("connection lock poisoned".into()))?;
+
+        const SELECT: &str = "SELECT id, author, text, source_json, captured_at, word_count, register_json, tags_json, confidence_json, profile_json, embedding FROM samples";
+        let mut rows: Vec<(VoiceSample, Vec<f32>)> = Vec::new();
+        if let Some(author) = author {
+            let mut stmt = conn
+                .prepare(&format!("{SELECT} WHERE author = ?1"))
+                .map_err(|e| LexiconError::Storage(e.to_string()))?;
+            let mapped = stmt
+                .query_map(params![author], row_to_sample_with_embedding)
+                .map_err(|e| LexiconError::Storage(e.to_string()))?;
+            for row in mapped {
+                rows.push(row.map_err(|e| LexiconError::Storage(e.to_string()))?);
+            }
+        } else {
+            let mut stmt = conn
+                .prepare(SELECT)
+                .map_err(|e| LexiconError::Storage(e.to_string()))?;
+            let mapped = stmt
+                .query_map([], row_to_sample_with_embedding)
+                .map_err(|e| LexiconError::Storage(e.to_string()))?;
+            for row in mapped {
+                rows.push(row.map_err(|e| LexiconError::Storage(e.to_string()))?);
+            }
+        }
+        Ok(rows)
+    }
 }
 
 #[async_trait]
@@ -137,35 +176,7 @@ impl LexiconEngine for SqliteEngine {
         top_k: usize,
     ) -> Result<Vec<VoiceSample>> {
         let query_embedding = self.embed_one(query)?;
-
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| LexiconError::Storage("connection lock poisoned".into()))?;
-
-        const SELECT: &str = "SELECT id, author, text, source_json, captured_at, word_count, register_json, tags_json, confidence_json, profile_json, embedding FROM samples";
-        let mut rows: Vec<(VoiceSample, Vec<f32>)> = Vec::new();
-        if let Some(author) = author {
-            let mut stmt = conn
-                .prepare(&format!("{SELECT} WHERE author = ?1"))
-                .map_err(|e| LexiconError::Storage(e.to_string()))?;
-            let mapped = stmt
-                .query_map(params![author], row_to_sample_with_embedding)
-                .map_err(|e| LexiconError::Storage(e.to_string()))?;
-            for row in mapped {
-                rows.push(row.map_err(|e| LexiconError::Storage(e.to_string()))?);
-            }
-        } else {
-            let mut stmt = conn
-                .prepare(SELECT)
-                .map_err(|e| LexiconError::Storage(e.to_string()))?;
-            let mapped = stmt
-                .query_map([], row_to_sample_with_embedding)
-                .map_err(|e| LexiconError::Storage(e.to_string()))?;
-            for row in mapped {
-                rows.push(row.map_err(|e| LexiconError::Storage(e.to_string()))?);
-            }
-        }
+        let rows = self.select_samples_with_embedding(author)?;
 
         let corpus: Vec<&[f32]> = rows.iter().map(|(_, e)| e.as_slice()).collect();
         let ranked = fastembed::similarity::top_k(&query_embedding, &corpus, top_k);
@@ -173,6 +184,14 @@ impl LexiconEngine for SqliteEngine {
         Ok(ranked
             .into_iter()
             .map(|(idx, _score)| rows[idx].0.clone())
+            .collect())
+    }
+
+    async fn samples_for(&self, author: Option<&str>) -> Result<Vec<VoiceSample>> {
+        Ok(self
+            .select_samples_with_embedding(author)?
+            .into_iter()
+            .map(|(sample, _embedding)| sample)
             .collect())
     }
 
