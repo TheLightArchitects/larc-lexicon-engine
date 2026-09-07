@@ -16,7 +16,7 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 async-trait = "0.1"
-rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 fastembed = { version = "5", optional = true }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
 clap = { version = "4", features = ["derive"], optional = true }

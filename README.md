@@ -19,8 +19,8 @@ Three pieces, deliberately separated:
   `patterns_for`.
 - **`backend::SqliteEngine`** (opt-in, `sqlite-backend` feature) — a
   reference implementation: SQLite for storage, `fastembed` (pure Rust,
-  ONNX, offline after the first model download) for embeddings, brute-force
-  cosine similarity via `fastembed::similarity::top_k` for search.
+  ONNX, offline after the first model download) for embeddings, an in-crate
+  brute-force cosine similarity ranking for search.
 
 ## Why the backend is a feature, not the default
 

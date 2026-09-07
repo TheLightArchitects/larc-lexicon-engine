@@ -9,6 +9,8 @@
 //!   transcripts, which is harder than it looks and easy to get quietly wrong.
 //! - [`distill`] — deriving candidate `VoicePattern`s from measured evidence
 //!   instead of writing them by hand.
+//! - [`style_guide`] — rendering distilled patterns into the markdown brief
+//!   an LLM system prompt actually conditions on.
 //!
 //! The core carries no storage or embedding dependency. A reference backend
 //! ([`backend::SqliteEngine`]) ships behind the off-by-default `sqlite-backend`
@@ -21,6 +23,7 @@ pub mod engine;
 pub mod ingest;
 pub mod metrics;
 pub mod schema;
+pub mod style_guide;
 
 pub use distill::distill_patterns;
 pub use engine::{LexiconEngine, LexiconError, Result};
@@ -35,6 +38,7 @@ pub use schema::{
     Confidence, CorpusProfile, LinguisticProfile, PatternCategory, Register, SourceKind, SourceRef,
     VoicePattern, VoiceSample,
 };
+pub use style_guide::render_style_guide;
 
 /// Deterministic id for an entity whose identity should come from its
 /// content or origin rather than being randomly assigned — `UUID v5` over
